@@ -5,7 +5,7 @@
 import tempfile
 from argparse import ArgumentParser
 from copy import deepcopy
-from typing import ClassVar, Dict
+from typing import Dict
 
 from olive.cli.base import (
     BaseOliveCLICommand,
@@ -30,17 +30,13 @@ class ModelBuilderAccuracyLevel(IntEnumBase):
 
 
 class CaptureOnnxGraphCommand(BaseOliveCLICommand):
-    allow_unknown_args: ClassVar[bool] = True
-
     @staticmethod
     def register_subcommand(parser: ArgumentParser):
         sub_parser = parser.add_parser(
             "capture-onnx-graph",
             help=(
-                (
-                    "Capture ONNX graph using PyTorch Exporter or Model Builder "
-                    "from the Huggingface model or PyTorch model."
-                ),
+                "Capture ONNX graph using PyTorch Exporter or Model Builder "
+                "from the Huggingface model or PyTorch model."
             ),
         )
 
@@ -142,7 +138,7 @@ class CaptureOnnxGraphCommand(BaseOliveCLICommand):
         )
 
         sub_parser.add_argument(
-            "--use_ort_genai", action="store_true", help="Use OnnxRuntie generate() API to run the model"
+            "--use_ort_genai", action="store_true", help="Use OnnxRuntime generate() API to run the model"
         )
 
         # remote options
@@ -167,12 +163,18 @@ class CaptureOnnxGraphCommand(BaseOliveCLICommand):
     def get_run_config(self, tempdir: str) -> Dict:
         config = deepcopy(TEMPLATE)
 
+        input_model_config = get_input_model_config(self.args)
+        assert input_model_config["type"].lower() in {
+            "hfmodel",
+            "pytorchmodel",
+        }, "Only HfModel and PyTorchModel are supported in capture-onnx-graph command."
+
         # whether model is in fp16 (currently not supported by CPU EP)
         is_fp16 = (not self.args.use_model_builder and self.args.torch_dtype == "float16") or (
             self.args.use_model_builder and self.args.precision == "fp16"
         )
         to_replace = [
-            ("input_model", get_input_model_config(self.args)),
+            ("input_model", input_model_config),
             ("output_dir", tempdir),
             ("log_severity_level", self.args.log_level),
             (("systems", "local_system", "accelerators", 0, "device"), "gpu" if is_fp16 else "cpu"),

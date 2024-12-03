@@ -37,7 +37,14 @@ class QuantizeCommand(BaseOliveCLICommand):
         )
 
         # model options
-        add_input_model_options(sub_parser, enable_hf=True, enable_pt=True, default_output_path="quantized-model")
+        add_input_model_options(
+            sub_parser,
+            enable_hf=True,
+            enable_hf_adapter=True,
+            enable_pt=True,
+            enable_onnx=True,
+            default_output_path="quantized-model",
+        )
 
         sub_parser.add_argument(
             "--algorithm",
@@ -54,15 +61,15 @@ class QuantizeCommand(BaseOliveCLICommand):
             help="The precision of the quantized model.",
         )
         sub_parser.add_argument(
-            "--enable-qdq-encoding",
-            action="store_true",
-            help="Use QDQ encoding in ONNX model for the quantized nodes.",
-        )
-        sub_parser.add_argument(
             "--implementation",
             type=str,
             choices=sorted(TEMPLATE["passes"].keys()),
-            help="Use specific implementation of quantization algorithms to run.",
+            help="The specific implementation of quantization algorithms to use.",
+        )
+        sub_parser.add_argument(
+            "--enable-qdq-encoding",
+            action="store_true",
+            help="Use QDQ encoding in ONNX model for the quantized nodes.",
         )
         sub_parser.add_argument(
             "--quarot_rotate", action="store_true", help="Apply QuaRot/Hadamard rotation to the model."
@@ -70,8 +77,8 @@ class QuantizeCommand(BaseOliveCLICommand):
 
         add_dataset_options(sub_parser, required=False, include_train=False, include_eval=False)
         add_remote_options(sub_parser)
-        add_logging_options(sub_parser)
         add_shared_cache_options(sub_parser)
+        add_logging_options(sub_parser)
         sub_parser.set_defaults(func=QuantizeCommand)
 
     def _get_run_config(self, tempdir: str) -> Dict[str, Any]:
@@ -196,7 +203,7 @@ TEMPLATE = {
         "bnb4": {"type": "OnnxBnb4Quantization", "quant_type": "nf4"},
         "matmul4": {"type": "OnnxMatMul4Quantizer", "accuracy_level": 4},
         "mnb_to_qdq": {"type": "MatMulNBitsToQDQ"},
-        "nvmo": {"type": "NVModelOptQuantization", "precision": "int4", "algorithm": "RTN"},
+        "nvmo": {"type": "NVModelOptQuantization", "precision": "int4", "algorithm": "AWQ"},
         "onnx_dynamic": {"type": "OnnxDynamicQuantization", "weight_type": "QInt8"},
         "inc_dynamic": {"type": "IncDynamicQuantization", "quant_level": "auto", "algorithm": "RTN"},
         # NOTE(all): Not supported yet!
@@ -224,7 +231,7 @@ ALGORITHMS = {
         "description": "(HfModel, OnnxModel) WOQ with GPTQ.",
     },
     "rtn": {
-        "implementations": ["quarot", "bnb4", "matmul4", "nvmo"],
+        "implementations": ["quarot", "bnb4", "matmul4"],
         "hf_model_defaults": {"implementation": "quarot", "precision": "int16"},
         "onnx_model_defaults": {"implementation": "onnx_static", "precision": "int8"},
         "description": "(HfModel, OnnxModel) WOQ with RTN.",
@@ -235,12 +242,12 @@ ALGORITHMS = {
         "onnx_model_defaults": {"implementation": "matmul4", "precision": "int4"},
         "description": "(OnnxModel) HQQ quantization using onnxruntime.",
     },
-    "static": {
-        "implementations": ["onnx_static", "inc_static"],
-        "hf_model_defaults": {"implementation": None, "precision": None},
-        "onnx_model_defaults": {"implementation": "onnx_static", "precision": "int8"},
-        "description": "(OnnxModel) Static quantization using onnxruntime.",
-    },
+    # "static": {
+    #     "implementations": ["onnx_static", "inc_static"],
+    #     "hf_model_defaults": {"implementation": None, "precision": None},
+    #     "onnx_model_defaults": {"implementation": "onnx_static", "precision": "int8"},
+    #     "description": "(OnnxModel) Static quantization using onnxruntime.",
+    # },
     "dynamic": {
         "implementations": ["onnx_dynamic", "inc_dynamic"],
         "hf_model_defaults": {"implementation": None, "precision": None},

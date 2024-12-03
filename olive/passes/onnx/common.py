@@ -3,12 +3,14 @@
 # Licensed under the MIT License.
 # --------------------------------------------------------------------------
 import logging
+import re
 from pathlib import Path
 from typing import Dict, Optional, Union
 
 import onnx
 
 from olive.model import ONNXModelHandler
+from olive.passes.onnx.onnx_dag import OnnxDAG
 from olive.passes.pass_config import PassConfigParam
 from olive.resource_path import LocalFile, LocalFolder
 
@@ -183,3 +185,25 @@ def model_proto_to_olive_model(
         onnx.checker.check_model(olive_model.model_path)
 
     return olive_model
+
+
+LORA_NAME_PATTERNS = [
+    f".*[./]{name}[./]{matmul}$"
+    for name in ["default_0", "default_0_1", "default", "default_1", "lora_A", "lora_B"]
+    for matmul in ["MatMul", "MatMul_Q4"]
+]
+
+
+# TODO(jambayk): considering matching by subgraph pattern, more involved but more reliable
+def model_has_adapters(model_path: Union[str, Path]) -> bool:
+    """Check if the model has adapters.
+
+    :param model_path: The path to the model.
+    :return: True if the model has adapters, False otherwise.
+    """
+    dag = OnnxDAG(onnx.load(model_path, load_external_data=False))
+    for node_name in dag.get_node_names():
+        op_type = dag.get_node_op_type(node_name)
+        if op_type in {"MatMul", "MatMulNBits"} and any(re.match(pattern, node_name) for pattern in LORA_NAME_PATTERNS):
+            return True
+    return False

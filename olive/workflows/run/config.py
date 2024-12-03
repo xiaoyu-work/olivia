@@ -135,7 +135,7 @@ class RunConfig(NestedConfig):
             " no-search or auto-optimizer mode based on whether passes field is provided."
         ),
     )
-    passes: Dict[str, RunPassConfig] = Field(None, description="Pass configurations.")
+    passes: Dict[str, RunPassConfig] = Field(default_factory=dict, description="Pass configurations.")
     pass_flows: List[List[str]] = Field(
         None,
         description=(
@@ -246,20 +246,6 @@ class RunConfig(NestedConfig):
         if "engine" not in values:
             raise ValueError("Invalid engine")
 
-        disable_search = v.get("disable_search")
-        if not values["engine"].search_strategy:
-            if disable_search is False:
-                raise ValueError("You cannot set disable_search is False if search strategy is None/False/{}")
-            # disable search if search_strategy is None/False/{}, user cannot override it.
-            # If user explicitly set, raise error when disable_search is False and search_strategy is None/False/{}
-            if disable_search is None:
-                disable_search = True
-        else:
-            # disable search if user explicitly set disable_search to True
-            disable_search = disable_search or False
-
-        v["disable_search"] = disable_search
-
         # validate first to gather config params
         v = validate_config(v, RunPassConfig).dict()
 
@@ -270,10 +256,10 @@ class RunConfig(NestedConfig):
         for param_name in v["config"]:
             if v["config"][param_name] == PassParamDefault.SEARCHABLE_VALUES:
                 searchable_configs.add(param_name)
-            if param_name.endswith("data_config"):
-                v["config"] = _resolve_data_config(v["config"], values, param_name)
 
-        if disable_search and searchable_configs:
+        resolve_all_data_configs(v["config"], values)
+
+        if not values["engine"].search_strategy and searchable_configs:
             raise ValueError(
                 f"You cannot disable search for {v['type']} and"
                 f" set {searchable_configs} to SEARCHABLE_VALUES at the same time."
@@ -286,6 +272,17 @@ class RunConfig(NestedConfig):
         if v is None:
             return v
         return _resolve_config(values, v)
+
+
+def resolve_all_data_configs(config, values):
+    """Recursively traverse the config dictionary to resolve all 'data_config' keys."""
+    for param_name, param_value in config.items():
+        if param_name.endswith("data_config"):
+            _resolve_data_config(config, values, param_name)
+            continue
+
+        if isinstance(param_value, dict):
+            resolve_all_data_configs(param_value, values)
 
 
 def _insert_azureml_client(config, azureml_client):

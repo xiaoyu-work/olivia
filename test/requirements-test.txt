@@ -8,6 +8,7 @@ azureml-fsspec
 # Pin azureml-metrics[all] greater than 0.0.26 to avoid breaking change in azureml-evaluate-mlflow
 azureml-metrics[all]>=0.0.26
 coverage
+cppimport
 datasets
 docker>=7.1.0
 evaluate
@@ -15,9 +16,10 @@ git+https://github.com/microsoft/TransformerCompression.git ; python_version >= 
 mlflow>=2.4.0
 neural-compressor
 nncf==2.7.0
-nvidia-modelopt~=0.11.0
+nvidia-modelopt
 onnx-graphsurgeon
 onnxconverter_common
+onnxmltools
 onnxruntime_extensions
 openvino==2023.2.0
 optimum>=1.17.0
@@ -32,3 +34,6 @@ pytorch_lightning
 sentencepiece
 tabulate
 torchvision
+# 4.46.0 is broken https://github.com/huggingface/transformers/issues/34370
+# TODO(anyone): remove when the issue is fixed or CI migrates to python 3.9
+transformers<4.46.0

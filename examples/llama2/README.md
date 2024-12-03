@@ -180,15 +180,6 @@ Run the following command to execute the workflow:
 python llama2.py --qlora
 ```
 
-**Note:**
-Get access to the following resource on Hugging Face Hub:
-- [nampdn-ai/tiny-codes](https://huggingface.co/nampdn-ai/tiny-codes)
-
-Login to your Hugging Face account:
-```bash
-huggingface-cli login
-```
-
 ### Running Workflows on the Cloud
 
 You may notice that this workflow takes a long time to run, especially for QLoRA. Olive offers a feature that allows you to submit the workflow to the cloud, enabling it to run on the compute resources in your Azure Machine Learning workspace.
@@ -205,7 +196,7 @@ To use this feature, you will need a `remote_config.json` file to configure your
 }
 ```
 
-More details about `keyvault_name` can be found [here](https://microsoft.github.io/Olive/features/huggingface_model_optimization.html#huggingface-login).
+More details about `keyvault_name` can be found [here](https://microsoft.github.io/Olive/how-to/configure-workflows/huggingface-integration.html#huggingface-login).
 
 Make sure you have installed Olive Azure ML extra by running:
 
@@ -219,11 +210,11 @@ Then you can run the following command:
 python llama2.py --qlora --remote_config remote_config.json
 ```
 
-Olive will submit the workflow to the compute resources in your Azure Machine Learning workspace and execute the workflow there. The output artifacts will be automatically exported to the Datastore. For more detailed information, please refer to [the official documentation](https://microsoft.github.io/Olive/features/run_workflow_remotely.html).
+Olive will submit the workflow to the compute resources in your Azure Machine Learning workspace and execute the workflow there. The output artifacts will be automatically exported to the Datastore. For more detailed information, please refer to [the official documentation](https://microsoft.github.io/Olive/how-to/configure-workflows/azure-ai/remote-workflow.html).
 
 ### Accelerating Workflows with shared cache
 
-The shared cache is a system where Olive stores intermediate models in Azure Blob Storage. For more detailed information, please refer to [the documentation](https://microsoft.github.io/Olive/features/shared_cache.html).
+The shared cache is a system where Olive stores intermediate models in Azure Blob Storage. For more detailed information, please refer to [the documentation](https://microsoft.github.io/Olive/how-to/configure-workflows/azure-ai/shared-model-cache.html).
 
 You can run the following command:
 

@@ -141,7 +141,7 @@ class LoRABase(Pass):
             "lora_r": PassConfigParam(
                 type_=int,
                 default_value=64,
-                searchable_values=Categorical([16, 32, 64]),
+                search_defaults=Categorical([16, 32, 64]),
                 description="Lora R dimension.",
             ),
             "lora_alpha": PassConfigParam(
@@ -835,8 +835,8 @@ class LoftQ(QLoRABase):
         # save the new master weights
         new_master_weights_path = output_model_path / "model"
         new_master_weights_path.mkdir(parents=True, exist_ok=True)
-        model.save_metadata(new_master_weights_path)
         pytorch_model.save_pretrained(new_master_weights_path)
+        model.save_metadata(new_master_weights_path)
 
         del pytorch_model
 

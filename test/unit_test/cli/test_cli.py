@@ -5,8 +5,7 @@
 import json
 import subprocess
 import sys
-import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -64,6 +63,20 @@ def test_legacy_call(deprecated_module):
         f"Running `python -m {deprecated_module}` is deprecated and might be removed in the future."
         in out.stderr.decode("utf-8")
     )
+
+
+def test_unknown_args():
+    # setup
+    command_args = ["olive", "run", "--config", "config.json", "--unknown-arg", "-u"]
+
+    # execute and assert
+    with pytest.raises(subprocess.CalledProcessError) as exc_info:
+        subprocess.run(command_args, check=True, capture_output=True)
+
+    error_message = exc_info.value.stderr.decode("utf-8")
+    assert "Unknown arguments:" in error_message
+    assert "--unknown-arg" in error_message
+    assert "-u" in error_message
 
 
 @pytest.mark.parametrize("packages", [True, False])
@@ -210,11 +223,10 @@ def test_capture_onnx_command(_, mock_tempdir, mock_run, use_model_builder, tmp_
     assert {el.name for el in output_dir.iterdir()} == {dummy_output.name}
 
 
-@pytest.mark.parametrize("test_set", [(None, "successfully"), (MagicMock(name="blob1"), "failed")])
-@patch("azure.storage.blob.ContainerClient")
-@patch("olive.cli.shared_cache.get_credentials", return_value="dummy-credentials")
-def test_shared_cache_command(_, mock_container_client, test_set):
+@patch("olive.cli.shared_cache.AzureContainerClientFactory")
+def test_shared_cache_command(mock_AzureContainerClientFactory):
     # setup
+    mock_factory_instance = mock_AzureContainerClientFactory.return_value
     command_args = [
         "shared-cache",
         "--delete",
@@ -225,19 +237,35 @@ def test_shared_cache_command(_, mock_container_client, test_set):
         "--model_hash",
         "model_hash",
     ]
-    mock_blob = MagicMock(name="blob1")
-    mock_container_client.return_value.list_blobs.side_effect = [[mock_blob], [test_set[0]]]
 
     # execute
-    with unittest.TestCase().assertLogs(logger="olive.cli.shared_cache", level="INFO") as log:
-        cli_main(command_args)
+    cli_main(command_args)
 
     # assert
-    assert (test_set[1] in message for message in log.output), "Expected log message not found."
-    mock_container_client.assert_called_once_with(
-        account_url="https://account.blob.core.windows.net", container_name="container", credential="dummy-credentials"
-    )
-    mock_container_client().delete_blob.assert_called_once()
+    mock_factory_instance.delete_blob.assert_called_once_with("model_hash")
+
+
+@patch("builtins.input", side_effect=lambda _: "y")
+@patch("olive.cli.shared_cache.AzureContainerClientFactory")
+def test_shared_cache_delete_all_with_confirmation(mock_AzureContainerClientFactory, mock_input):
+    # setup
+    mock_factory_instance = mock_AzureContainerClientFactory.return_value
+    command_args = [
+        "shared-cache",
+        "--delete",
+        "--account",
+        "account",
+        "--container",
+        "container",
+        "--all",
+    ]
+
+    # execute
+    cli_main(command_args)
+
+    # assert
+    mock_input.assert_called_once_with("Are you sure you want to delete all cache? (y/n): ")
+    mock_factory_instance.delete_all.assert_called_once()
 
 
 @pytest.mark.parametrize("algorithm_name", ["awq", "gptq", "rtn"])

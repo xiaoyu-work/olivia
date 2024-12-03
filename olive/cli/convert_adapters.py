@@ -6,7 +6,7 @@ import math
 from argparse import ArgumentParser
 from typing import TYPE_CHECKING, Tuple
 
-from olive.cli.base import BaseOliveCLICommand
+from olive.cli.base import BaseOliveCLICommand, add_logging_options
 from olive.common.utils import WeightsFileFormat, save_weights
 
 if TYPE_CHECKING:
@@ -24,6 +24,7 @@ class ConvertAdaptersCommand(BaseOliveCLICommand):
             ),
         )
         sub_parser.add_argument(
+            "-a",
             "--adapter_path",
             type=str,
             required=True,
@@ -37,6 +38,7 @@ class ConvertAdaptersCommand(BaseOliveCLICommand):
             help=f"Format to save the weights in. Default is {WeightsFileFormat.ONNX_ADAPTER}.",
         )
         sub_parser.add_argument(
+            "-o",
             "--output_path",
             type=str,
             required=True,
@@ -48,31 +50,31 @@ class ConvertAdaptersCommand(BaseOliveCLICommand):
             default="float32",
             choices=["float32", "float16"],
             help=(
-                "Data type to save float weights as. If quantize_int4 is True, this is the data type of the"
+                "Data type to save float adapter weights as. If quantize_int4 is True, this is the data type of the"
                 " quantization scales. Default is float32."
             ),
         )
-        # quantization options
+        # int4 quantization options for adapter weights
         sub_parser.add_argument(
             "--quantize_int4",
             action="store_true",
-            help="Quantize the weights to int4 using blockwise quantization.",
+            help="Quantize the adapter weights to int4 using blockwise quantization.",
         )
-        int4_group = sub_parser.add_argument_group("int4 quantization options")
-        int4_group.add_argument(
+        sub_parser.add_argument(
             "--int4_block_size",
             type=int,
             default=32,
             choices=[16, 32, 64, 128, 256],
-            help="Block size for int4 quantization. Default is 32.",
+            help="Block size for int4 quantization of adapter weights. Default is 32.",
         )
-        int4_group.add_argument(
+        sub_parser.add_argument(
             "--int4_quantization_mode",
             type=str,
             default="symmetric",
             choices=["symmetric", "asymmetric"],
-            help="Quantization mode for int4 quantization. Default is symmetric.",
+            help="Quantization mode for int4 quantization of adapter weights. Default is symmetric.",
         )
+        add_logging_options(sub_parser)
         sub_parser.set_defaults(func=ConvertAdaptersCommand)
 
     def run(self):

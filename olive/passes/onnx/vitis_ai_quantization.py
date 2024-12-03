@@ -17,7 +17,12 @@ from olive.hardware import AcceleratorSpec
 from olive.model import ONNXModelHandler
 from olive.model.utils import resolve_onnx_path
 from olive.passes import Pass
-from olive.passes.onnx.common import get_external_data_config, model_proto_to_file, model_proto_to_olive_model
+from olive.passes.onnx.common import (
+    get_external_data_config,
+    model_has_adapters,
+    model_proto_to_file,
+    model_proto_to_olive_model,
+)
 from olive.passes.pass_config import PassConfigParam
 from olive.resource_path import LocalFile
 from olive.strategy.search_parameter import Boolean, Categorical, Conditional
@@ -37,7 +42,7 @@ vai_q_onnx_quantization_config = {
     "weight_type": PassConfigParam(
         type_=str,
         default_value="QInt8",
-        searchable_values=Categorical(["QInt8"]),
+        search_defaults=Categorical(["QInt8"]),
         description="""
             Data type for quantizing weights which is used in vai_q_onnx quantization.
             'QInt8' for signed 8-bit integer,
@@ -81,7 +86,7 @@ vai_q_onnx_quantization_config = {
     "per_channel": PassConfigParam(
         type_=bool,
         default_value=False,
-        searchable_values=Boolean(),
+        search_defaults=Boolean(),
         description="""
             Quantize weights per channel.
         """,
@@ -89,7 +94,7 @@ vai_q_onnx_quantization_config = {
     "optimize_model": PassConfigParam(
         type_=bool,
         default_value=False,
-        searchable_values=Boolean(),
+        search_defaults=Boolean(),
         description="""
             Deprecating Soon in ONNX! Optimize model before quantization. NOT recommended, optimization will
             change the computation graph, making debugging of quantization loss difficult.
@@ -106,7 +111,7 @@ vai_q_onnx_quantization_config = {
     "quant_preprocess": PassConfigParam(
         type_=bool,
         default_value=True,
-        searchable_values=Boolean(),
+        search_defaults=Boolean(),
         description="""
             Shape inference and model optimization, in preparation for quantization.
             https://onnxruntime.ai/docs/performance/quantization.html#pre-processing
@@ -115,7 +120,7 @@ vai_q_onnx_quantization_config = {
     "calibrate_method": PassConfigParam(
         type_=str,
         default_value="MinMSE",
-        searchable_values=Categorical(["NonOverflow", "MinMSE"]),
+        search_defaults=Categorical(["NonOverflow", "MinMSE"]),
         description="""
             Current calibration methods supported are NonOverflow and MinMSE,
             Please use NonOverflow or MinMSE as options.
@@ -124,7 +129,7 @@ vai_q_onnx_quantization_config = {
     "quant_format": PassConfigParam(
         type_=str,
         default_value="QDQ",
-        searchable_values=Categorical(["QDQ", "QOperator"]),
+        search_defaults=Categorical(["QDQ", "QOperator"]),
         description="""
             QDQ format quantize the model by inserting QuantizeLinear/DeQuantizeLinear on the tensor.
         """,
@@ -132,7 +137,7 @@ vai_q_onnx_quantization_config = {
     "need_layer_fusing": PassConfigParam(
         type_=bool,
         default_value=False,
-        searchable_values=Boolean(),
+        search_defaults=Boolean(),
         description="""
             Perform layer fusion for conv-relu type operations
         """,
@@ -143,7 +148,7 @@ vai_q_onnx_quantization_config = {
         # the search space is conditional on quant_format and weight_type
         # the equivalent joint search space for (quant_format, weight_type, activation) is
         # {(QDQ, QInt8, QInt8), (QDQ, QUInt8, QUInt8), (QOperator, QUInt8, QUInt8)}
-        searchable_values=Conditional(
+        search_defaults=Conditional(
             parents=("quant_format", "weight_type"),
             support={
                 ("QDQ", "QInt8"): Categorical(["QInt8"]),
@@ -160,7 +165,7 @@ vai_q_onnx_quantization_config = {
     "enable_dpu": PassConfigParam(
         type_=bool,
         default_value=False,
-        searchable_values=Boolean(),
+        search_defaults=Boolean(),
         description="""
             Use QDQ format optimized specifically for DPU.
         """,
@@ -217,7 +222,7 @@ class VitisAIQuantization(Pass):
             "quant_mode": PassConfigParam(
                 type_=str,
                 default_value="static",
-                searchable_values=Categorical(["static"]),
+                search_defaults=Categorical(["static"]),
                 description="""
                     Onnx Quantization mode.
                     'static' for vitis ai quantization.
@@ -235,6 +240,10 @@ class VitisAIQuantization(Pass):
     def _run_for_config(
         self, model: ONNXModelHandler, config: Dict[str, Any], output_model_path: str
     ) -> ONNXModelHandler:
+        if model_has_adapters(model.model_path):
+            logger.info("Model has adapters which should not be quantized. Returning the model without quantization.")
+            return model
+
         from onnxruntime.quantization.quant_utils import QuantFormat, QuantType
 
         from olive.passes.onnx.vitis_ai import quantize_static

@@ -15,6 +15,8 @@ import yaml
 from olive.cli.constants import CONDA_CONFIG
 from olive.common.user_module_loader import UserModuleLoader
 from olive.common.utils import hardlink_copy_dir, hash_dict, hf_repo_exists, set_nested_dict_value, unescaped_str
+from olive.hardware.accelerator import AcceleratorSpec
+from olive.hardware.constants import DEVICE_TO_EXECUTION_PROVIDERS
 from olive.resource_path import OLIVE_RESOURCE_ANNOTATIONS, find_all_resources
 
 
@@ -50,14 +52,18 @@ def _get_hf_input_model(args: Namespace, model_path: OLIVE_RESOURCE_ANNOTATIONS)
         "model_path": model_path,
         "generative": args.is_generative_model,
         "load_kwargs": {
-            "trust_remote_code": args.trust_remote_code,
             "attn_implementation": "eager",
         },
     }
-    if args.task:
+    # use getattr to avoid AttributeError in case hf model or adapter_path is not supported
+    # will let the command fail if hf model is returned even though it is not supported
+    if getattr(args, "task", None):
+        # conditional is needed since task=None is not handled in the model handler
         input_model["task"] = args.task
     if getattr(args, "adapter_path", None):
         input_model["adapter_path"] = args.adapter_path
+    if getattr(args, "trust_remote_code", None) is not None:
+        input_model["load_kwargs"]["trust_remote_code"] = args.trust_remote_code
     return input_model
 
 
@@ -167,8 +173,7 @@ def get_input_model_config(args: Namespace) -> Dict:
         with open(model_path / "model_config.json") as f:
             model_config = json.load(f)
 
-        adapter_path = getattr(args, "adapter_path", None)
-        if adapter_path:
+        if adapter_path := getattr(args, "adapter_path", None):
             assert model_config["type"].lower() == "hfmodel", "Only HfModel supports adapter_path."
             model_config["config"]["adapter_path"] = adapter_path
 
@@ -249,22 +254,22 @@ def add_remote_options(sub_parser: ArgumentParser):
         "--resource_group",
         type=str,
         required=False,
-        help="Resource group for the AzureML workspace.",
+        help="Resource group for the AzureML workspace to run the workflow remotely.",
     )
     remote_group.add_argument(
         "--workspace_name",
         type=str,
         required=False,
-        help="Workspace name for the AzureML workspace.",
+        help="Workspace name for the AzureML workspace to run the workflow remotely.",
     )
     remote_group.add_argument(
         "--keyvault_name",
         type=str,
         required=False,
         help=(
-            "The azureml keyvault name with huggingface token to use for remote run. Refer to"
-            " https://microsoft.github.io/Olive/features/huggingface_model_optimization.html#huggingface-login for"
-            " more details."
+            "The azureml keyvault name with huggingface token to use for remote run. Refer to "
+            "https://microsoft.github.io/Olive/how-to/configure-workflows/huggingface-integration.html#huggingface-login"
+            " for more details."
         ),
     )
     remote_group.add_argument(
@@ -284,11 +289,13 @@ def add_input_model_options(
     enable_pt: bool = False,
     enable_onnx: bool = False,
     default_output_path: Optional[str] = None,
+    directory_output: bool = True,
 ):
     """Add model options to the sub_parser.
 
     Use enable_hf, enable_hf_adapter, enable_pt, enable_onnx to enable the corresponding model options.
     If default_output_path is None, it is required to provide the output_path.
+    If directory_output is True, the output_path is a directory and will be created if it doesn't exist.
     """
     assert any([enable_hf, enable_hf_adapter, enable_pt, enable_onnx]), "At least one model option should be enabled."
 
@@ -298,20 +305,24 @@ def add_input_model_options(
         "-m",
         "--model_name_or_path",
         type=str,
+        # only pytorch model doesn't require model_name_or_path
+        required=not enable_pt,
         help=(
             "Path to the input model. "
-            "See https://microsoft.github.io/Olive/features/cli.html#input-model for more information"
+            "See https://microsoft.github.io/Olive/reference/cli.html#providing-input-models "
+            "for more informsation."
         ),
     )
     if enable_hf:
+        model_group.add_argument("-t", "--task", type=str, help="Task for which the huggingface model is used.")
         model_group.add_argument(
-            "--trust_remote_code", action="store_true", help="Trust remote code when loading a model."
+            "--trust_remote_code", action="store_true", help="Trust remote code when loading a huggingface model."
         )
-        model_group.add_argument("-t", "--task", type=str, help="Task for which the model is used.")
 
     if enable_hf_adapter:
         assert enable_hf, "enable_hf must be True when enable_hf_adapter is True."
         model_group.add_argument(
+            "-a",
             "--adapter_path",
             type=str,
             help="Path to the adapters weights saved after peft fine-tuning. Local folder or huggingface id.",
@@ -320,18 +331,22 @@ def add_input_model_options(
         model_group.add_argument(
             "--model_script",
             type=str,
-            help="The script file containing the model definition. Required for PyTorch model.",
+            help="The script file containing the model definition. Required for the local PyTorch model.",
         )
         model_group.add_argument(
             "--script_dir",
             type=str,
-            help="The directory containing the model script file.",
+            help=(
+                "The directory containing the local PyTorch model script file."
+                "See https://microsoft.github.io/Olive/reference/cli.html#model-script-file-information "
+                "for more informsation."
+            ),
         )
     model_group.add_argument("--is_generative_model", type=bool, default=True, help="Is this a generative model?")
     model_group.add_argument(
         "-o",
         "--output_path",
-        type=output_path_type,
+        type=output_path_type if directory_output else str,
         required=default_output_path is None,
         default=default_output_path,
         help="Path to save the command output.",
@@ -561,19 +576,12 @@ def add_accelerator_options(sub_parser, single_provider: bool = True):
         type=str,
         default="cpu",
         choices=["gpu", "cpu", "npu"],
-        help="Device used to run the model.",
+        help="Target device to run the model. Default is cpu.",
     )
 
-    execution_providers = [
-        "CUDAExecutionProvider",
-        "CPUExecutionProvider",
-        "DmlExecutionProvider",
-        "JsExecutionProvider",
-        "MIGraphXExecutionProvider",
-        "OpenVINOExecutionProvider",
-        "QNNExecutionProviderROCMExecutionProvider",
-        "TensorrtExecutionProvider",
-    ]
+    execution_providers = sorted(
+        {provider for provider_list in DEVICE_TO_EXECUTION_PROVIDERS.values() for provider in provider_list}
+    )
 
     if single_provider:
         accelerator_group.add_argument(
@@ -581,7 +589,7 @@ def add_accelerator_options(sub_parser, single_provider: bool = True):
             type=str,
             default="CPUExecutionProvider",
             choices=execution_providers,
-            help="Execution provider to use for ONNX model.",
+            help="Execution provider to use for ONNX model. Default is CPUExecutionProvider.",
         )
     else:
         accelerator_group.add_argument(
@@ -594,21 +602,23 @@ def add_accelerator_options(sub_parser, single_provider: bool = True):
                 "If not provided, all available providers will be used."
             ),
         )
+    accelerator_group.add_argument(
+        "--memory",
+        type=AcceleratorSpec.str_to_int_memory,
+        default=None,
+        help="Memory limit for the accelerator in bytes. Default is None.",
+    )
 
     return accelerator_group
 
 
 def update_accelerator_options(args, config, single_provider: bool = True):
+    execution_providers = [args.provider] if single_provider else args.providers_list
     to_replace = [
         (("systems", "local_system", "accelerators", 0, "device"), args.device),
+        (("systems", "local_system", "accelerators", 0, "execution_providers"), execution_providers),
+        (("systems", "local_system", "accelerators", 0, "memory"), args.memory),
     ]
-
-    execution_providers = [args.provider] if single_provider else args.providers_list
-    for idx, provider in enumerate(execution_providers):
-        if not provider.endswith("ExecutionProvider"):
-            execution_providers[idx] = f"{provider}ExecutionProvider"
-    to_replace.append((("systems", "local_system", "accelerators", 0, "execution_providers"), execution_providers))
-
     for k, v in to_replace:
         if v is not None:
             set_nested_dict_value(config, k, v)
@@ -624,8 +634,8 @@ def add_search_options(sub_parser: ArgumentParser):
         nargs="?",
         choices=["exhaustive", "tpe", "random"],
         help=(
-            "Enable search to produce optimal model for the given evaluation criteria."
-            "Optionally provide search algorithm from available choices."
+            "Enable search to produce optimal model for the given criteria. "
+            "Optionally provide search algorithm from available choices. "
             "Use exhastive search algorithm by default."
         ),
     )

@@ -14,9 +14,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
 from olive.common.config_utils import ConfigBase, convert_configs_to_dicts, validate_config
-from olive.common.constants import ACCOUNT_URL_TEMPLATE, DEFAULT_CACHE_DIR, DEFAULT_WORKFLOW_ID
+from olive.common.constants import DEFAULT_CACHE_DIR, DEFAULT_WORKFLOW_ID
+from olive.common.container_client_factory import AzureContainerClientFactory
 from olive.common.pydantic_v1 import root_validator, validator
-from olive.common.utils import get_credentials, hash_dict, hf_repo_exists, set_nested_dict_value
+from olive.common.utils import hash_dict, hf_repo_exists, set_nested_dict_value
 from olive.model.config.model_config import ModelConfig
 from olive.resource_path import ResourcePath, create_resource_path, find_all_resources
 
@@ -376,9 +377,38 @@ class OliveCache:
         output_dir.mkdir(parents=True, exist_ok=True)
         model_json = self.load_model(model_id)
         if model_json["type"].lower() == "compositemodel":
-            logger.warning("Saving models of type '%s' is not supported yet.", model_json["type"])
-            return None
+            model_json_config = model_json["config"]
+            copied_components = []
+            for component_names, component in zip(
+                model_json_config["model_component_names"], model_json_config["model_components"]
+            ):
+                copied_components.append(
+                    self._save_model(
+                        component,
+                        output_dir=output_dir,
+                        overwrite=overwrite,
+                        only_cache_files=only_cache_files,
+                        path_prefix=component_names,
+                    )
+                )
+            model_json_config["model_components"] = copied_components
+            model_json = self._save_additional_files(model_json, output_dir)
+        else:
+            model_json = self._save_model(model_json, output_dir, overwrite)
 
+        # save model json
+        with (output_dir / "model_config.json").open("w") as f:
+            json.dump(model_json, f, indent=4)
+        return model_json
+
+    def _save_model(
+        self,
+        model_json: dict,
+        output_dir: str,
+        overwrite: bool = False,
+        only_cache_files: bool = False,
+        path_prefix: str = None,
+    ) -> dict:
         # create model object so that we can get the resource paths
         model_config: ModelConfig = ModelConfig.from_json(model_json)
         resource_paths = model_config.get_resource_paths()
@@ -413,17 +443,26 @@ class OliveCache:
                         continue
 
             # save resource to output directory
-            model_json["config"][resource_name] = local_resource_path.save_to_dir(
-                output_dir, resource_name.replace("_path", ""), overwrite
-            )
+            path_name = resource_name.replace("_path", "")
+            if path_prefix:
+                path_name = f"{path_prefix}_{path_name}"
+            model_json["config"][resource_name] = local_resource_path.save_to_dir(output_dir, path_name, overwrite)
 
+        # we only have additional files for onnx models so saving to "model" is safe
+        model_path_name = "model"
+        if path_prefix:
+            model_path_name = f"{path_prefix}_{model_path_name}"
+        return self._save_additional_files(model_json, output_dir / model_path_name)
+
+    def _save_additional_files(self, model_json: dict, output_dir: Path) -> dict:
         # Copy "additional files" to the model folder
         # we only have additional files for onnx models so saving to "model" is safe
         model_attributes = model_json["config"].get("model_attributes") or {}
         additional_files = model_attributes.get("additional_files", [])
 
         for i, src_filepath in enumerate(additional_files):
-            dst_filepath = output_dir / "model" / Path(src_filepath).name
+            output_dir.mkdir(parents=True, exist_ok=True)
+            dst_filepath = output_dir / Path(src_filepath).name
             additional_files[i] = str(dst_filepath)
 
             if not dst_filepath.exists():
@@ -432,9 +471,6 @@ class OliveCache:
         if additional_files:
             model_json["config"]["model_attributes"]["additional_files"] = additional_files
 
-        # save model json
-        with (output_dir / "model_config.json").open("w") as f:
-            json.dump(model_json, f, indent=4)
         return model_json
 
     def disable_shared_cache(self):
@@ -444,18 +480,7 @@ class OliveCache:
 
 class SharedCache:
     def __init__(self, account_name: str, container_name: str):
-        try:
-            from azure.storage.blob import ContainerClient
-        except ImportError as exc:
-            raise ImportError(
-                "Please install azure-storage-blob and azure-identity to use the shared model cache feature."
-            ) from exc
-        credential = get_credentials()
-        self.container_name = container_name
-        account_url = ACCOUNT_URL_TEMPLATE.format(account_name=account_name)
-        self.container_client = ContainerClient(
-            account_url=account_url, container_name=container_name, credential=credential
-        )
+        self.container_client_factory = AzureContainerClientFactory(account_name, container_name)
 
     def cache_run(self, model_id: str, run_json_path: Path) -> None:
         """Cache run json to shared cache."""
@@ -465,6 +490,15 @@ class SharedCache:
             logger.debug("Cached run %s to shared cache.", model_id)
         except Exception:
             logger.exception("Failed to cache run to shared cache.")
+            # delete all uploaded files if any upload fails
+            try:
+                self.container_client_factory.delete_blob(model_id)
+            except Exception:
+                logger.exception(
+                    "Upload model to shared cache failed. There might be some dirty files in the shared cache."
+                    "Please manually clean up. %s",
+                    model_id,
+                )
 
     def load_run(self, model_id: str, run_json_path: Path) -> Optional[Dict]:
         blob = f"{model_id}/run.json"
@@ -472,13 +506,8 @@ class SharedCache:
             if not self.exist_in_shared_cache(blob):
                 logger.info("Run %s is not found in shared cache.", model_id)
                 return {}
-            blob_client = self.container_client.get_blob_client(blob)
             logger.info("Downloading %s to %s", blob, run_json_path)
-
-            with open(run_json_path, "wb") as download_file:
-                download_stream = blob_client.download_blob()
-                download_file.write(download_stream.readall())
-
+            self.container_client_factory.download_blob(blob, run_json_path)
             with run_json_path.open() as f:
                 return json.load(f)
         except Exception:
@@ -551,11 +580,20 @@ class SharedCache:
             # upload model config file
             model_config_bytes = json.dumps(model_json_copy).encode()
             with io.BytesIO(model_config_bytes) as data:
-                self.container_client.upload_blob(f"{model_id}/model.json", data=data, overwrite=False)
-
+                self.container_client_factory.upload_blob(f"{model_id}/model.json", data)
             logger.info("Model %s is uploaded to shared cache.", model_id)
+
         except Exception:
             logger.exception("Failed to upload model to shared cache.")
+            # delete all uploaded files if any upload fails
+            try:
+                self.container_client_factory.delete_blob(model_id)
+            except Exception:
+                logger.exception(
+                    "Upload model to shared cache failed. There might be some dirty files in the shared cache."
+                    "Please manually clean up. %s",
+                    model_id,
+                )
 
     def load_model(self, model_id: str, model_json_path: Path) -> ModelConfig:
         """Get model config from shared cache by model id."""
@@ -566,13 +604,8 @@ class SharedCache:
             return None
 
         try:
-            blob_client = self.container_client.get_blob_client(model_config_blob)
             logger.info("Downloading %s to %s", model_config_blob, model_json_path)
-
-            with open(model_json_path, "wb") as download_file:
-                download_stream = blob_client.download_blob()
-                download_file.write(download_stream.readall())
-
+            self.container_client_factory.download_blob(model_config_blob, model_json_path)
             with open(model_json_path) as file:
                 return json.load(file)
         except Exception:
@@ -614,17 +647,15 @@ class SharedCache:
         output_model_path = Path(output_model_path) / "model"
 
         model_directory_prefix = f"{input_model_id}/model/model"
-        blob_list = self.container_client.list_blobs(name_starts_with=model_directory_prefix)
+        blob_list = self.container_client_factory.get_blob_list(model_directory_prefix)
         self._download_blob_list(blob_list, model_directory_prefix, output_model_path)
 
         adapter_directory_prefix = f"{input_model_id}/model/adapter"
-        blob_list = self.container_client.list_blobs(name_starts_with=adapter_directory_prefix)
+        blob_list = self.container_client_factory.get_blob_list(adapter_directory_prefix)
         self._download_blob_list(blob_list, adapter_directory_prefix, output_model_path, "adapter")
 
         additional_files_directory_prefix = f"{input_model_id}/model/additional_files"
-        additional_files_blob_list = self.container_client.list_blobs(
-            name_starts_with=additional_files_directory_prefix
-        )
+        additional_files_blob_list = self.container_client_factory.get_blob_list(additional_files_directory_prefix)
         self._download_blob_list(
             additional_files_blob_list, additional_files_directory_prefix, output_model_path, "additional_files"
         )
@@ -647,7 +678,7 @@ class SharedCache:
     def exist_in_shared_cache(self, blob_name: str) -> bool:
         logger.debug("Checking shared cache for: %s", blob_name)
         try:
-            return any(self.container_client.list_blobs(blob_name))
+            return self.container_client_factory.exists(blob_name)
         except Exception:
             logger.exception("Failed to check shared cache for %s.", blob_name)
             return False
@@ -673,20 +704,16 @@ class SharedCache:
     def _upload_file_to_blob(self, file_path: Path, blob_name: str):
         logger.info("Uploading %s to %s", file_path, blob_name)
         with open(file_path, "rb") as data:
-            self.container_client.upload_blob(name=blob_name, data=data, overwrite=False)
+            self.container_client_factory.upload_blob(blob_name, data)
 
     def _download_blob_list(
         self, blob_list, directory_prefix: str, output_model_path: Path, prefix: str = None
     ) -> None:
         for blob in blob_list:
-            blob_client = self.container_client.get_blob_client(blob)
             local_file_path = (
                 output_model_path / prefix / blob.name[len(directory_prefix) + 1 :]
                 if prefix
                 else output_model_path / blob.name[len(directory_prefix) + 1 :]
             )
             logger.info("Downloading %s to %s", blob.name, local_file_path)
-            local_file_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(local_file_path, "wb") as download_file:
-                download_stream = blob_client.download_blob()
-                download_file.write(download_stream.readall())
+            self.container_client_factory.download_blob(blob, local_file_path)

@@ -81,26 +81,31 @@ class OnnxIO(ConfigBase):
 class OnnxDAG:
     """ONNX model as a directed acyclic graph (DAG)."""
 
-    def __init__(self, model: "ModelProto"):
+    def __init__(self, model: "ModelProto", only_main_graph: bool = False):
         self.model = model
-        self.graphs = self.get_all_graphs(self.model)
+        self.graphs = self.get_all_graphs(self.model, only_main_graph)
         self.nodes: Dict[str, OnnxNode] = {}
         self.ios: Dict[str, OnnxIO] = {}
         self.connections = defaultdict(list)
+        self.unique_node_counter = 0
 
         # traverse the graphs and populate nodes, ios, and connections
         for idx, graph in enumerate(self.graphs):
             self._process_io(graph, self.ios, idx)
             for node in graph.node:
-                self._process_node(node, self.nodes, self.ios, self.connections, idx)
+                self.add_node(node, idx)
 
     @staticmethod
-    def get_all_graphs(model: "ModelProto") -> List[GraphProto]:
+    def get_all_graphs(model: "ModelProto", only_main_graph: bool = False) -> List[GraphProto]:
         """Get all graphs in the model.
 
         :param model: ONNX model.
+        :param only_main_graph: whether to return only the main graph.
         :return: list of graphs in the model.
         """
+        if only_main_graph:
+            return [model.graph]
+
         all_graphs = []
         graph_queue = [model.graph]
         while graph_queue:
@@ -127,17 +132,32 @@ class OnnxDAG:
         :param ios: dictionary to store the inputs, outputs, and initializers.
         :param graph_idx: index of the graph in the model.
         """
+        error_message = (
+            "%s %s already exists in the graph. Will use the latest definition. If they are different, please fix the"
+            " model with unique names."
+        )
+
         for i in graph.input:
+            if i.name in ios:
+                logger.warning(error_message, "Input", i.name)
             ios[i.name] = OnnxIO(proto=[i], source=SpecialInput.INPUT, graph_idx=graph_idx)
         for o in graph.output:
+            if o.name in ios:
+                logger.warning(error_message, "Output", o.name)
             ios[o.name] = OnnxIO(proto=[o], destination=[SpecialOutput.OUTPUT], graph_idx=graph_idx)
         for initializer in graph.initializer:
-            if initializer.name in ios:
-                # it can be both an input and an initializer
+            if initializer.name in ios and not SpecialInput.is_initializer(ios[initializer.name].source):
+                # already exists as an input
                 io = ios[initializer.name]
                 io.proto.append(initializer)
                 io.source = SpecialInput.INPUT_INITIALIZER
+            elif initializer.name in ios:
+                # already exists as an input_initializer or initializer
+                # replace the existing proto at proto[-1]
+                logger.warning(error_message, "Initializer", initializer.name)
+                ios[initializer.name].proto[-1] = initializer
             else:
+                # new initializer
                 ios[initializer.name] = OnnxIO(
                     proto=[initializer],
                     source=SpecialInput.INITIALIZER,
@@ -150,6 +170,7 @@ class OnnxDAG:
 
     @staticmethod
     def _process_node(
+        name: str,
         node_proto: NodeProto,
         nodes: Dict[str, OnnxNode],
         ios: Dict[str, OnnxIO],
@@ -167,7 +188,6 @@ class OnnxDAG:
         :param overwrite_input_initializers: whether to overwrite the inputs and/or initializers if a node
             output is already present as an one. If False, it will raise an error.
         """
-        name = node_proto.name
         onnx_node = OnnxNode(
             proto=node_proto,
             op_type=node_proto.op_type,
@@ -203,8 +223,7 @@ class OnnxDAG:
                 raise ValueError(f"Output {o} is already connected to another node.")
             ios[o].source = name
             for destination in ios[o].destination:
-                if destination != SpecialOutput.OUTPUT:
-                    connections[name].append(destination)
+                connections[name].append(destination)
 
     def add_input(self, input_proto: ValueInfoProto, graph_idx: int, keep_initializer: bool = False):
         """Add an input to the graph.
@@ -224,7 +243,7 @@ class OnnxDAG:
         """
         self._add_special_input(initializer, graph_idx, SpecialInput.INITIALIZER, keep_input)
 
-    def add_value_info(self, value_info: ValueInfoProto, graph_idx: int):
+    def add_value_info(self, value_info: ValueInfoProto, graph_idx: int, overwrite: bool = False):
         """Add a value info to the graph.
 
         :param value_info: ValueInfoProto of the value info.
@@ -236,8 +255,18 @@ class OnnxDAG:
             self.ios[name] = OnnxIO(proto=[value_info], graph_idx=graph_idx)
             return
 
-        assert not self.ios[name].proto, f"Value info for {name} already exists in the graph."
-        self.ios[name].proto.append(value_info)
+        assert (
+            overwrite or not self.ios[name].proto
+        ), f"Value info for {name} already exists in the graph but overwrite is False."
+        self.ios[name].proto = [value_info]
+
+    def is_io(self, io_name: str) -> bool:
+        """Check if an input/output exists in the graph.
+
+        :param io_name: name of the input/output.
+        :return: True if the input/output exists.
+        """
+        return io_name in self.ios
 
     def _add_special_input(
         self,
@@ -330,7 +359,13 @@ class OnnxDAG:
         :param overwrite_input_initializers: whether to overwrite the inputs and/or initializers if a node
             output is already present as an one. If False, it will raise an error.
         """
-        self._process_node(node_proto, self.nodes, self.ios, self.connections, graph_idx, overwrite_input_initializers)
+        node_name = node_proto.name
+        if not node_name or node_name in self.nodes:
+            node_name = f"{node_proto.op_type}_{self.unique_node_counter}"
+            self.unique_node_counter += 1
+        self._process_node(
+            node_name, node_proto, self.nodes, self.ios, self.connections, graph_idx, overwrite_input_initializers
+        )
 
     def remove_node(self, node_name: str):
         """Remove a node from the graph.
@@ -463,21 +498,37 @@ class OnnxDAG:
         """
         return self.nodes[node_name].op_type
 
-    def get_node_inputs(self, node_name: str) -> List[str]:
+    def get_node_proto(self, node_name: str) -> NodeProto:
+        """Get the node proto.
+
+        :param node_name: name of the node.
+        :return: NodeProto object.
+        """
+        return self.nodes[node_name].proto
+
+    def get_node_inputs(self, node_name: str, skip_empty_io: bool = False) -> List[str]:
         """Get the input names of a node.
 
         :param node_name: name of the node.
+        :param skip_empty_io: whether to skip empty inputs.
         :return: list of input names.
         """
-        return list(self.nodes[node_name].inputs)
+        inputs = self.nodes[node_name].inputs
+        if skip_empty_io:
+            inputs = filter(lambda i: i != "", inputs)
+        return list(inputs)
 
-    def get_node_outputs(self, node_name: str) -> List[str]:
+    def get_node_outputs(self, node_name: str, skip_empty_io: bool = False) -> List[str]:
         """Get the output names of a node.
 
         :param node_name: name of the node.
+        :param skip_empty_io: whether to skip empty outputs.
         :return: list of output names.
         """
-        return list(self.nodes[node_name].outputs)
+        outputs = self.nodes[node_name].outputs
+        if skip_empty_io:
+            outputs = filter(lambda o: o != "", outputs)
+        return list(outputs)
 
     def get_node_attributes(self, node_name: str) -> Dict[str, Any]:
         """Get the attributes of a node.
@@ -510,6 +561,19 @@ class OnnxDAG:
         :return: True if the input/output is an initializer.
         """
         return SpecialInput.is_initializer(self.ios[io_name].source)
+
+    def is_constant_input(self, io_name: str, allow_input_initializer: bool = False) -> bool:
+        """Check if an input/output comes from an initializer or a constant node.
+
+        :param io_name: name of the input/output.
+        :param allow_input_initializer: whether to consider input_initializer as a constant input.
+        :return: True if the input/output is a constant input.
+        """
+        source = self.ios[io_name].source
+        if source in self.nodes:
+            return self.get_node_op_type(source) == "Constant"
+
+        return (source == SpecialInput.INITIALIZER) or (allow_input_initializer and SpecialInput.is_initializer(source))
 
     def get_graph_idx(self, name: str) -> int:
         """Get the index of the graph containing the input/output or node."""
@@ -544,6 +608,17 @@ class OnnxDAG:
         if self.is_output(io_name):
             return
         self.ios[io_name].destination.append(SpecialOutput.OUTPUT)
+        self.connections[self.get_producer(io_name)].append(SpecialOutput.OUTPUT)
+
+    def remove_output(self, io_name: str):
+        """Remove an output from an input/output.
+
+        :param io_name: name of the input/output.
+        """
+        if not self.is_output(io_name):
+            return
+        self.ios[io_name].destination.remove(SpecialOutput.OUTPUT)
+        self.connections[self.get_producer(io_name)].remove(SpecialOutput.OUTPUT)
 
     def get_producer(self, io_name: str) -> str:
         """Get the producer of an input/output.
@@ -553,16 +628,43 @@ class OnnxDAG:
         """
         return self.ios[io_name].source
 
-    def get_consumers(self, node_name: str) -> List[str]:
+    def get_consumers(self, node_name: str, return_special_outputs: bool = False) -> List[str]:
         """Get the consumers of a node.
 
         :param node_name: name of the node. It can also be an input or initializer.
+
         :return: list of names of nodes that consume one/more outputs of the node.
         """
-        if node_name in self.ios and SpecialInput.is_special_input(self.ios[node_name].source):
-            return list(self.ios[node_name].destination)
+        if node_name in self.ios:
+            consumers = self.ios[node_name].destination
+        else:
+            consumers = self.connections[node_name]
 
-        return list(self.connections[node_name])
+        if return_special_outputs:
+            return list(consumers)
+
+        return list(filter(lambda c: c != SpecialOutput.OUTPUT, consumers))
+
+    def get_parents(self, node_name: str, return_special_inputs: bool = False) -> List[str]:
+        """Get the parents of a node.
+
+        :param node_name: name of the node.
+        :return: list of names of nodes that produce one/more inputs of the node.
+        """
+        parents = [self.ios[i].source for i in self.nodes[node_name].inputs if i != ""]
+
+        if return_special_inputs:
+            return parents
+
+        return list(filter(lambda p: not SpecialInput.is_special_input(p), parents))
+
+    def is_input_consumer(self, node_name: str) -> bool:
+        """Check if a node is an input consumer.
+
+        :param node_name: name of the node.
+        :return: True if the node consumes one/more inputs that are also model inputs.
+        """
+        return any(SpecialInput.is_special_input(p) for p in self.get_parents(node_name, return_special_inputs=True))
 
     def is_output_producer(self, node_name: str) -> bool:
         """Check if a node is an output producer.
@@ -570,7 +672,7 @@ class OnnxDAG:
         :param node_name: name of the node.
         :return: True if the node produces one/more outputs that are also model outputs.
         """
-        return any(SpecialOutput.OUTPUT in self.ios[o].destination for o in self.nodes[node_name].outputs)
+        return SpecialOutput.OUTPUT in self.get_consumers(node_name, return_special_outputs=True)
 
     def _topological_sort_util(self, v: str, visited: Set[str], order: List[str]):
         """Do depth-first search starting from node v.
@@ -683,10 +785,11 @@ class OnnxDAG:
         logger.debug("Removed %d Identity nodes", len(nodes_to_remove))
 
     @classmethod
-    def from_model_path(cls, model_path: Union[str, Path]) -> "OnnxDAG":
+    def from_model_path(cls, model_path: Union[str, Path], only_main_graph: bool = False) -> "OnnxDAG":
         """Load an ONNX model and create an self.
 
         :param model_path: path to the ONNX model.
+        :param only_main_graph: whether to create a DAG with only the main graph.
         :return: OnnxDAG object.
         """
-        return cls(onnx.load(model_path))
+        return cls(onnx.load(model_path), only_main_graph=only_main_graph)

@@ -1,11 +1,15 @@
 azure-ai-ml
 azure-identity
-datasets
+# TODO(anyone): load_metrics was removed since 3.0.0. Using evaluate instead
+datasets<3.0.0
 docker>=7.1.0
 evaluate
 neural-compressor
 optimum
+pytorch_lightning
 scikit-learn
 scipy
 tabulate
-transformers
+# 4.46.0 is broken https://github.com/huggingface/transformers/issues/34370
+# TODO(anyone): remove when the issue is fixed or CI migrates to python 3.9
+transformers<4.46.0

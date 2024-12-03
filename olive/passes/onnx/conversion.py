@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
 
 import onnx
-import onnx.external_data_helper
 import torch
 from packaging import version
 
@@ -203,7 +202,8 @@ class OnnxConversion(Pass):
             # The "legacy dynamo" is the torch.onnx_dynamo_export API
             legacy_dynamo_supported_version = version.parse("2.2.0").release
             # The new "dynamo" api is torch.onnx.export with dynamo=True
-            dynamo_supported_version = version.parse("2.5.0").release
+            # TODO(#1478): Change 2.6.0 back to 2.5.0 when dynamic_shapes are supported in Olive
+            dynamo_supported_version = version.parse("2.6.0").release
             if torch_version < legacy_dynamo_supported_version:
                 raise ImportError(
                     f"torch.onnx.dynamo_export is not available for torch version {torch_version}. "
@@ -375,6 +375,14 @@ class OnnxConversion(Pass):
         converted_onnx_model = OnnxConversion._export_pytorch_model(
             pytorch_model, dummy_inputs, io_config, config, device, torch_dtype, tempfile.tempdir
         )
+
+        model_attributes = deepcopy(model.model_attributes or {})
+
+        # add split information if present
+        split_assignments = model_attributes.get("split_assignments")
+        if split_assignments:
+            split_assignment_str = ";".join([f"{k}={v}" for k, v in split_assignments.items()])
+            onnx.helper.set_model_props(converted_onnx_model, {"split_assignments": split_assignment_str})
 
         # save the model to the output path and return the model
         output_model_path = resolve_onnx_path(output_model_path)

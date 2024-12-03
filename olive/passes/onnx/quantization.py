@@ -21,7 +21,12 @@ from olive.hardware.accelerator import AcceleratorSpec
 from olive.model import ONNXModelHandler
 from olive.model.utils import resolve_onnx_path
 from olive.passes import Pass
-from olive.passes.onnx.common import get_external_data_config, model_proto_to_file, model_proto_to_olive_model
+from olive.passes.onnx.common import (
+    get_external_data_config,
+    model_has_adapters,
+    model_proto_to_file,
+    model_proto_to_olive_model,
+)
 from olive.passes.pass_config import PassConfigParam
 from olive.resource_path import LocalFile
 from olive.strategy.search_parameter import Boolean, Categorical, Conditional, ConditionalDefault
@@ -35,7 +40,7 @@ _onnx_quantization_config = {
     "weight_type": PassConfigParam(
         type_=str,
         default_value="QInt8",
-        searchable_values=Categorical(["QInt8", "QUInt8"]),
+        search_defaults=Categorical(["QInt8", "QUInt8"]),
         description="""
             Data type for quantizing weights which is used both in dynamic
             and static quantization. 'QInt8' for signed 8-bit integer,
@@ -73,7 +78,7 @@ _onnx_quantization_config = {
     "per_channel": PassConfigParam(
         type_=bool,
         default_value=False,
-        searchable_values=Boolean(),
+        search_defaults=Boolean(),
         description="""
             Quantize weights per channel.
             Tips: When to use reduce_range and per-channel quantization:
@@ -83,7 +88,7 @@ _onnx_quantization_config = {
     "reduce_range": PassConfigParam(
         type_=bool,
         default_value=False,
-        searchable_values=Boolean(),
+        search_defaults=Boolean(),
         description="""
             Quantize weights with 7-bits. It may improve the accuracy for
             some models running on non-VNNI machine, especially for per-channel mode.
@@ -94,7 +99,7 @@ _onnx_quantization_config = {
     "quant_preprocess": PassConfigParam(
         type_=bool,
         default_value=True,
-        searchable_values=Boolean(),
+        search_defaults=Boolean(),
         description="""
             Shape inference and model optimization, in preparation for quantization.
             https://onnxruntime.ai/docs/performance/quantization.html#pre-processing
@@ -159,7 +164,7 @@ _static_optional_config = {
     "calibrate_method": PassConfigParam(
         type_=str,
         default_value="MinMax",
-        searchable_values=Categorical(["MinMax", "Entropy", "Percentile"]),
+        search_defaults=Categorical(["MinMax", "Entropy", "Percentile"]),
         description="""
             Current calibration methods supported are MinMax and Entropy,
             Please use CalibrationMethod.MinMax or CalibrationMethod.Entropy as options.
@@ -169,7 +174,7 @@ _static_optional_config = {
     "quant_format": PassConfigParam(
         type_=str,
         default_value="QDQ",
-        searchable_values=Categorical(["QOperator", "QDQ"]),
+        search_defaults=Categorical(["QOperator", "QDQ"]),
         description="""
             QOperator format quantizes the model with quantized operators directly.
             QDQ format quantize the model by inserting QuantizeLinear/DeQuantizeLinear on the tensor.
@@ -181,7 +186,7 @@ _static_optional_config = {
         # the search space is conditional on quant_format and weight_type
         # the equivalent joint search space for (quant_format, weight_type, activation) is
         # {(QDQ, QInt8, QInt8), (QDQ, QUInt8, QUInt8), (QOperator, QUInt8, QUInt8)}
-        searchable_values=Conditional(
+        search_defaults=Conditional(
             parents=("quant_format", "weight_type"),
             support={
                 ("QDQ", "QInt8"): Categorical(["QInt8"]),
@@ -269,7 +274,7 @@ class OnnxQuantization(Pass):
             "quant_mode": PassConfigParam(
                 type_=str,
                 default_value="static",
-                searchable_values=Categorical(["dynamic", "static"]),
+                search_defaults=Categorical(["dynamic", "static"]),
                 description="""
                     Onnx Quantization mode. 'dynamic' for dynamic quantization,
                     'static' for static quantization.
@@ -291,22 +296,21 @@ class OnnxQuantization(Pass):
                 parents=("quant_mode",),
                 support={("static",): value.default_value, ("dynamic",): ConditionalDefault.get_ignored_choice()},
             )
-            if isinstance(value.searchable_values, Categorical):
+            if isinstance(value.search_defaults, Categorical):
                 # ignore the parameter if quant_mode is dynamic
-                # if quant_mode is static, use the searchable_values in static_optional_config by making it conditional
-                value.searchable_values = Conditional(
+                # if quant_mode is static, use the search_defaults in static_optional_config by making it conditional
+                value.search_defaults = Conditional(
                     parents=("quant_mode",),
-                    support={("static",): value.searchable_values},
+                    support={("static",): value.search_defaults},
                     default=Conditional.get_ignored_choice(),
                 )
-            elif isinstance(value.searchable_values, Conditional):
+            elif isinstance(value.search_defaults, Conditional):
                 # ignore the parameter if quant_mode is dynamic
-                # if quant_mode is static, use the searchable_values in static_optional_config by expanding the parents
-                value.searchable_values = Conditional(
-                    parents=("quant_mode", *value.searchable_values.parents),
+                # if quant_mode is static, use the search_defaults in static_optional_config by expanding the parents
+                value.search_defaults = Conditional(
+                    parents=("quant_mode", *value.search_defaults.parents),
                     support={
-                        ("static", *key): value.searchable_values.support[key]
-                        for key in value.searchable_values.support
+                        ("static", *key): value.search_defaults.support[key] for key in value.search_defaults.support
                     },
                     default=Conditional.get_ignored_choice(),
                 )
@@ -346,6 +350,10 @@ class OnnxQuantization(Pass):
     def _run_for_config(
         self, model: ONNXModelHandler, config: Dict[str, Any], output_model_path: str
     ) -> ONNXModelHandler:
+        if model_has_adapters(model.model_path):
+            logger.info("Model has adapters which should not be quantized. Returning the model without quantization.")
+            return model
+
         from onnxruntime import __version__ as OrtVersion
         from onnxruntime.quantization import QuantFormat, QuantType, quantize_dynamic, quantize_static
         from onnxruntime.quantization.calibrate import CalibrationMethod
@@ -586,12 +594,12 @@ class OnnxStaticQuantization(OnnxQuantization):
         # external data config
         config.update(get_external_data_config())
         if accelerator_spec.execution_provider == "QNNExecutionProvider":
-            config["quant_format"].searchable_values = Categorical(["QDQ"])
+            config["quant_format"].search_defaults = Categorical(["QDQ"])
             # Recently Int16/Uint16 is added into onnx runtime quantization only in QDQ mode.
             # for QNN EP integration, we give this workaround to support Int16/Uint16 in QDQ mode.
             # TODO(jiapli): remove this workaround once figure out the Int16/UInt16 in latest quantization
-            config["activation_type"].searchable_values = Categorical(["QInt8", "QUInt8", "QUInt16", "QInt16"])
-            config["weight_type"].searchable_values = Categorical(["QInt8", "QUInt8", "QUInt16", "QInt16"])
+            config["activation_type"].search_defaults = Categorical(["QInt8", "QUInt8", "QUInt16", "QInt16"])
+            config["weight_type"].search_defaults = Categorical(["QInt8", "QUInt8", "QUInt16", "QInt16"])
             config["prepare_qnn_config"].default_value = True
             config["quant_preprocess"].default_value = False
             # in QNN EP, the default value WeightSymmetric is None
@@ -706,6 +714,14 @@ class OnnxMatMul4Quantizer(Pass):
     def _run_for_config(
         self, model: ONNXModelHandler, config: Dict[str, Any], output_model_path: str
     ) -> ONNXModelHandler:
+        if model_has_adapters(model.model_path) and config["algorithm"] not in {None, "DEFAULT"}:
+            logger.info(
+                "Model has adapters which should only be quantized with algorithm=None or DEFAULT. Got %s. Returning"
+                " the model without quantization.",
+                config["algorithm"],
+            )
+            return model
+
         from onnxruntime import __version__ as OrtVersion
 
         if version.parse(OrtVersion) < version.parse("1.16.2"):

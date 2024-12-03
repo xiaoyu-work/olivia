@@ -6,7 +6,7 @@ import logging
 import re
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict
 
 import numpy as np
 import onnx
@@ -16,7 +16,7 @@ from olive.hardware.accelerator import AcceleratorSpec
 from olive.model import ONNXModelHandler
 from olive.model.utils import resolve_onnx_path
 from olive.passes import Pass
-from olive.passes.onnx.common import get_external_data_config, model_proto_to_olive_model
+from olive.passes.onnx.common import LORA_NAME_PATTERNS, get_external_data_config, model_proto_to_olive_model
 from olive.passes.onnx.onnx_dag import OnnxDAG
 from olive.passes.pass_config import PassConfigParam
 
@@ -66,7 +66,7 @@ class ExtractAdapters(Pass):
             ),
             "save_format": PassConfigParam(
                 type_=WeightsFileFormat,
-                default_value=WeightsFileFormat.NUMPY,
+                default_value=WeightsFileFormat.ONNX_ADAPTER,
                 description="Format to save the weights in.",
             ),
         }
@@ -91,11 +91,10 @@ class ExtractAdapters(Pass):
 
         # nodes to remove at the end
         nodes_to_remove = set()
-
         for node_name in dag.get_node_names():
             op_type = dag.get_node_op_type(node_name)
             if op_type not in {"MatMul", "MatMulNBits"} or not any(
-                re.match(pattern, node_name) for pattern in self._get_lora_name_patterns()
+                re.match(pattern, node_name) for pattern in LORA_NAME_PATTERNS
             ):
                 # not a lora module
                 continue
@@ -174,15 +173,19 @@ class ExtractAdapters(Pass):
                 # add the module to the quant modules
                 quant_modules.add(new_weight_name.replace(".weight", ".quant"))
 
+        if not weights:
+            logger.info("No lora modules found in the model. Returning the original model.")
+            return model
+
         # remove old dequantize nodes
         for node_name in nodes_to_remove:
             dag.remove_node(node_name)
 
         if config["make_inputs"]:
-            if quant_modules and (config["dynamic_lora_r"] or config["optional_inputs"]):
-                # dynamic shape and optional inputs not supported for quantized modules yet
-                logger.warning("Quantized modules are not supported with dynamic_lora_r or optional_inputs. Ignoring.")
-                logger.debug("Quantized modules: %s", quant_modules)
+            if quant_modules and config["dynamic_lora_r"]:
+                # MatMulNBits has static K,N dimensions which are set as attributes
+                # No use case for DequantizeLinear with dynamic lora_r
+                logger.info("Quantized modules do not support dynamic_lora_r. Ignoring.")
 
             # create inputs for the weights
             for weight_name in weights:
@@ -203,7 +206,7 @@ class ExtractAdapters(Pass):
             external_initializers_file_name=weights_path.name if not config["make_inputs"] else None,
             constant_inputs_file_name=weights_path.name if config["make_inputs"] else None,
         )
-        output_model.model_attributes = deepcopy(model.model_attributes)
+        output_model.model_attributes = deepcopy(model.model_attributes) or {}
         # add adapter weights to the model attributes
         output_model.model_attributes["additional_files"] = additional_files = output_model.model_attributes.get(
             "additional_files", []
@@ -218,15 +221,6 @@ class ExtractAdapters(Pass):
         return output_model
 
     @staticmethod
-    def _get_lora_name_patterns() -> List[str]:
-        """Get the node name patterns for lora modules."""
-        return [
-            f".*[./]{name}[./]{matmul}$"
-            for name in ["default", "default_1", "lora_A", "lora_B"]
-            for matmul in ["MatMul", "MatMul_Q4"]
-        ]
-
-    @staticmethod
     def _create_new_weight_name(old_name: str) -> str:
         """Create new weight name based on old name.
 
@@ -238,6 +232,8 @@ class ExtractAdapters(Pass):
             weight_name.replace("/", ".")
             .replace("default.", "lora_A.")
             .replace("default_1.", "lora_B.")
+            .replace("default_0.", "lora_A.")
+            .replace("default_0_1.", "lora_B.")
             .replace(matmul_name, "weight")
         )
 
@@ -289,7 +285,14 @@ class ExtractAdapters(Pass):
     def _make_dynamic_optional(cls, dag: OnnxDAG, weights: Dict[str, "NDArray"], name: str, config: Dict[str, Any]):
         """Make the input dynamic and optional."""
         if "quant" in name:
-            # already logged warning before
+            # dynamic shape not supported for quantized modules
+            # cannot have empty tensor as default values, so create default initializers of the same shape
+            # scales must be zero to make the dequantized weights zero
+            # quant weight and zeros points also made zero to be clean and consistent
+            if config["optional_inputs"]:
+                initializer_proto = onnx.numpy_helper.from_array(np.zeros_like(weights[name]), name)
+                dag.add_initializer(initializer_proto, 0, keep_input=True)
+
             return
 
         # lora r dimension index
@@ -299,7 +302,7 @@ class ExtractAdapters(Pass):
         if config["dynamic_lora_r"]:
             dag.make_input_dim_dynamic(name, dim_idx, "lora_r")
 
-        # create default initializer
+        # create default initializer with the lora_r dimension set to 0
         if config["optional_inputs"]:
             shape = list(weights[name].shape)
             shape[dim_idx] = 0

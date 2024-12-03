@@ -292,7 +292,7 @@ def get_attr(module, attr, fail_on_not_found=False):
             if fail_on_not_found:
                 raise AttributeError(not_found_message) from e
             else:
-                logger.warning(not_found_message)
+                logger.debug(not_found_message)
                 return None
     return module
 
@@ -504,18 +504,23 @@ class WeightsFileFormat(StrEnumBase):
     ONNX_ADAPTER = "onnx_adapter"
 
 
-def save_weights(weights: Dict, path: str, file_format: WeightsFileFormat = WeightsFileFormat.NUMPY):
+def save_weights(weights: Dict, path: Union[str, Path], file_format: WeightsFileFormat = WeightsFileFormat.NUMPY):
     """Save the weights to a file.
 
     :param weights: Dictionary of numpy arrays.
-    :param path: Path to save the weights.
+    :param path: Path to save the weights. Might or might not include the file extension.
     :param file_format: Format to save the weights in.
     :return: Path to the saved file.
     """
     # validate file_format
     file_format = WeightsFileFormat(file_format)
 
-    path = Path(path).with_suffix(".npz" if file_format == WeightsFileFormat.NUMPY else f".{file_format}")
+    suffix = ".npz" if file_format == WeightsFileFormat.NUMPY else f".{file_format}"
+    path = str(path)
+    if not path.endswith(suffix):
+        # do this this instead of using Path.with_suffix because it will remove periods in the path
+        path += suffix
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     if file_format == WeightsFileFormat.PT:
