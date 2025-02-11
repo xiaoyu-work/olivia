@@ -27,7 +27,7 @@ def get_cli_parser(called_as_console_script: bool = True) -> ArgumentParser:
     :param called_as_console_script: Whether the script was called as a console script.
     :return: The CLI parser.
     """
-    parser = ArgumentParser("Olive CLI tool", usage="olive" if called_as_console_script else "python -m olive")
+    parser = ArgumentParser("Olive CLI tool", usage="olivia" if called_as_console_script else "python -m olivia")
     commands_parser = parser.add_subparsers()
 
     # Register commands
