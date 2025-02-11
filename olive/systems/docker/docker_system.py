@@ -103,30 +103,15 @@ class DockerSystem(OliveSystem):
                     _print_docker_logs(e.build_log, logging.ERROR)
                     raise
 
-    def run_pass(
-        self,
-        the_pass: "Pass",
-        model_config: "ModelConfig",
-        output_model_path: str,
-        point: Optional[Dict[str, Any]] = None,
-    ) -> "ModelConfig":
-        """Run the pass on the model at a specific point in the search space."""
+    def run_pass(self, the_pass: "Pass", model_config: "ModelConfig", output_model_path: str) -> "ModelConfig":
+        """Run the pass on the model."""
         with tempfile.TemporaryDirectory() as tempdir:
-            return self._run_pass_container(Path(tempdir), the_pass, model_config, output_model_path, point)
+            return self._run_pass_container(Path(tempdir), the_pass, model_config, output_model_path)
 
     def _run_pass_container(
-        self,
-        workdir: Path,
-        the_pass: "Pass",
-        model_config: "ModelConfig",
-        output_model_path: str,
-        point: Optional[Dict[str, Any]] = None,
+        self, workdir: Path, the_pass: "Pass", model_config: "ModelConfig", output_model_path: str
     ) -> "ModelConfig":
-        point = point or {}
-        config = the_pass.config_at_search_point(point)
-
         pass_config = the_pass.to_json(check_object=True)
-        pass_config["config"].update(the_pass.serialize_config(config, check_object=True))
 
         volumes_list = []
         runner_output_path = "runner_output"

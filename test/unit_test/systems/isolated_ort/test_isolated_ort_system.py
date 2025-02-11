@@ -4,6 +4,7 @@
 # --------------------------------------------------------------------------
 import json
 import platform
+import re
 import shutil
 import sys
 import venv
@@ -51,7 +52,7 @@ class TestIsolatedORTSystemConfig:
 
     def test_invalid_isolated_system_config(self):
         config = {"type": "IsolatedORT", "config": {"python_environment_path": "invalid_path"}}
-        with pytest.raises(ValueError, match=f"Python path {Path('invalid_path').resolve()} does not exist"):
+        with pytest.raises(ValueError, match=re.escape(f"Python path {Path('invalid_path').resolve()} does not exist")):
             SystemConfig.parse_obj(config)
 
 

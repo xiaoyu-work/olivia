@@ -5,11 +5,12 @@
 import logging
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import onnx
 
-from olive.common.hf.mappings import HIDDEN_SIZE_NAMES, MODEL_TYPE_MAPPING, NUM_HEADS_NAMES, NUM_KEY_VALUE_HEADS_NAMES
+from olive.common.hf.mappings import MODEL_TYPE_MAPPING
+from olive.common.hf.wrapper import ModelWrapper
 from olive.common.utils import exclude_keys
 from olive.hardware.accelerator import AcceleratorSpec, Device
 from olive.model import ONNXModelHandler
@@ -135,15 +136,23 @@ class OrtTransformersOptimization(Pass):
         config.update(get_external_data_config())
         return config
 
-    def validate_search_point(
-        self, search_point: Dict[str, Any], accelerator_spec: AcceleratorSpec, with_fixed_value: bool = False
+    @classmethod
+    def validate_config(
+        cls,
+        config: Dict[str, Any],
+        accelerator_spec: AcceleratorSpec,
+        disable_search: Optional[bool] = False,
     ) -> bool:
+        if not super().validate_config(config, accelerator_spec, disable_search):
+            return False
+
         from onnxruntime import __version__ as OrtVersion
         from packaging import version
 
-        if with_fixed_value:
-            search_point = self.config_at_search_point(search_point or {})
-        if search_point.get("float16"):
+        config_cls, _ = cls.get_config_class(accelerator_spec, disable_search)
+        config = config_cls(**config)
+
+        if config.float16:
             if accelerator_spec.execution_provider == "TensorrtExecutionProvider":
                 logger.info(
                     "TensorRT has its own float16 implementation, please avoid to use float16 in transformers "
@@ -153,21 +162,16 @@ class OrtTransformersOptimization(Pass):
             if accelerator_spec.execution_provider == "CPUExecutionProvider":
                 logger.info("CPUExecutionProvider does not support float16 very well, please avoid to use float16.")
                 return False
-        if not search_point.get("float16") and search_point.get("use_gqa"):
+        if not config.float16 and config.use_gqa:
             logger.info("use_gqa is only supported when float16 is True.")
             return False
-        if search_point.get("use_gpu") and accelerator_spec.execution_provider == "CPUExecutionProvider":
+        if config.use_gpu and accelerator_spec.execution_provider == "CPUExecutionProvider":
             logger.info("CPUExecutionProvider does not support GPU inference, please avoid to use use_gpu.")
             return False
-        if search_point.get("only_onnxruntime") and search_point.get("opt_level") <= 0:
+        if config.only_onnxruntime and config.opt_level <= 0:
             logger.info("Please specify a positive value for opt_level when only_onnxruntime is True")
             return False
-        if (
-            search_point.get("opt_level") == 0
-            and search_point.get("only_onnxruntime")
-            and search_point.get("num_heads") == 0
-            and search_point.get("hidden_size") == 0
-        ):
+        if config.opt_level == 0 and config.only_onnxruntime and config.num_heads == 0 and config.hidden_size == 0:
             if version.parse(OrtVersion) <= version.parse("1.16.0"):
                 logger.info(
                     "Ignore this search point because the issue https://github.com/microsoft/onnxruntime/issues/17254"
@@ -228,32 +232,20 @@ class OrtTransformersOptimization(Pass):
         run_config = exclude_keys(run_config, keys_to_remove)
 
         if model.model_attributes:
-            model_attributes = model.model_attributes
-            input_model_type = model_attributes.get("model_type")
-            if input_model_type:
-                model_type = MODEL_TYPE_MAPPING.get(input_model_type, input_model_type)
-            else:
-                model_type = None
+            model_wrapper = ModelWrapper(model.model_attributes)
+
+            model_type = MODEL_TYPE_MAPPING.get(model_wrapper.model_type, model_wrapper.model_type)
             if not run_config["model_type"] and model_type:
                 logger.debug("model_type is set to %s from model attributes", model_type)
             run_config["model_type"] = run_config["model_type"] or model_type
-            if run_config["num_heads"] == 0:
-                for num_heads_name in NUM_HEADS_NAMES:
-                    if num_heads_name in model_attributes:
-                        run_config["num_heads"] = model_attributes[num_heads_name]
-                        logger.debug("num_heads is set to %d from model attributes", run_config["num_heads"])
-                        break
-            if run_config["hidden_size"] == 0:
-                for hidden_size_name in HIDDEN_SIZE_NAMES:
-                    if hidden_size_name in model_attributes:
-                        run_config["hidden_size"] = model_attributes[hidden_size_name]
-                        logger.debug("hidden_size is set to %d from model attributes", run_config["hidden_size"])
-                        break
-            if num_kv_heads == 0:
-                for num_key_value_heads_name in NUM_KEY_VALUE_HEADS_NAMES:
-                    if num_key_value_heads_name in model_attributes:
-                        num_kv_heads = model_attributes[num_key_value_heads_name]
-                        break
+            if run_config["num_heads"] == 0 and model_wrapper.num_attention_heads:
+                run_config["num_heads"] = model_wrapper.num_attention_heads
+                logger.debug("num_heads is set to %d from model attributes", run_config["num_heads"])
+            if run_config["hidden_size"] == 0 and model_wrapper.hidden_size:
+                run_config["hidden_size"] = model_wrapper.hidden_size
+                logger.debug("hidden_size is set to %d from model attributes", run_config["hidden_size"])
+            if num_kv_heads == 0 and model_wrapper.num_key_value_heads:
+                num_kv_heads = model_wrapper.num_key_value_heads
 
         if run_config["model_type"] is None or run_config["model_type"] not in transformers_optimizer.MODEL_TYPES:
             logger.warning(

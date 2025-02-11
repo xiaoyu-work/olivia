@@ -8,15 +8,17 @@ import subprocess
 import sys
 from copy import deepcopy
 from pathlib import Path
-from typing import Generator, List, Optional, Union
+from typing import TYPE_CHECKING, List, Optional, Union
 
-from olive.auto_optimizer import AutoOptimizer
 from olive.common.utils import set_tempdir
 from olive.logging import set_default_logger_severity, set_ort_logger_severity, set_verbosity_info
 from olive.package_config import OlivePackageConfig
 from olive.systems.accelerator_creator import create_accelerators
 from olive.systems.common import SystemType
-from olive.workflows.run.config import RunConfig, RunPassConfig
+from olive.workflows.run.config import RunConfig
+
+if TYPE_CHECKING:
+    from olive.engine.config import RunPassConfig
 
 logger = logging.getLogger(__name__)
 
@@ -59,18 +61,19 @@ def get_required_packages(package_config: OlivePackageConfig, run_config: RunCon
 
     # add dependencies for passes
     if run_config.passes:
-        for pass_config in run_config.passes.values():
-            host = pass_config.host or run_config.engine.host
-            if (host and host.type == SystemType.Local) or not host:
-                local_packages.extend(get_pass_extras(pass_config.type))
-            else:
-                remote_packages.extend(get_pass_extras(pass_config.type))
-            if pass_config.type in ["SNPEConversion", "SNPEQuantization", "SNPEtoONNXConversion"]:
-                logger.info(
-                    "Please refer to https://microsoft.github.io/Olive/tutorials/passes/snpe.html to install SNPE"
-                    " prerequisites for pass %s",
-                    pass_config.type,
-                )
+        for passes_configs in run_config.passes.values():
+            for pass_config in passes_configs:
+                host = pass_config.host or run_config.engine.host
+                if (host and host.type == SystemType.Local) or not host:
+                    local_packages.extend(get_pass_extras(pass_config.type))
+                else:
+                    remote_packages.extend(get_pass_extras(pass_config.type))
+                if pass_config.type in ["SNPEConversion", "SNPEQuantization", "SNPEtoONNXConversion"]:
+                    logger.info(
+                        "Please refer to https://microsoft.github.io/Olive/tutorials/passes/snpe.html to install SNPE"
+                        " prerequisites for pass %s",
+                        pass_config.type,
+                    )
 
     # add dependencies for engine
     host_type = None
@@ -127,13 +130,14 @@ def get_pass_module_path(pass_type: str, package_config: OlivePackageConfig) -> 
 
 
 def is_execution_provider_required(run_config: RunConfig, package_config: OlivePackageConfig) -> bool:
-    passes = get_used_passes(run_config)
-    return any(get_pass_module_path(p.type, package_config).startswith("olive.passes.onnx") for p in passes)
+    return any(
+        get_pass_module_path(p.type, package_config).startswith("olive.passes.onnx")
+        for passes_configs in run_config.passes.values()
+        for p in passes_configs
+    )
 
 
 def run_engine(package_config: OlivePackageConfig, run_config: RunConfig):
-    from olive.passes import Pass
-
     workflow_id = run_config.workflow_id
     logger.info("Running workflow %s", workflow_id)
 
@@ -149,13 +153,9 @@ def run_engine(package_config: OlivePackageConfig, run_config: RunConfig):
     except Exception:
         logger.warning("ORT log severity level configuration ignored since the module isn't installed.")
 
-    # input model
-    input_model = run_config.input_model
-
     # Azure ML Client
-    engine = run_config.engine.create_engine(run_config.azureml_client, workflow_id)
-
     olive_config = run_config.to_json()
+    engine = run_config.engine.create_engine(package_config, run_config.azureml_client, workflow_id)
     engine.cache.cache_olive_config(olive_config)
 
     # run_config file will be uploaded to AML job
@@ -171,102 +171,40 @@ def run_engine(package_config: OlivePackageConfig, run_config: RunConfig):
         and run_config.auto_optimizer_config is not None
         and not run_config.auto_optimizer_config.disable_auto_optimizer
     )
-    if auto_optimizer_enabled:
-        is_ep_required = True
-    else:
-        is_ep_required = is_execution_provider_required(run_config, package_config)
-
-    # Register passes since we need to know whether they need to run on target
-    used_passes = list(get_used_passes(run_config))
-    for pass_config in used_passes:
-        logger.debug("Registering pass %s", pass_config.type)
-        package_config.import_pass_module(pass_config.type)
 
     # check if target is not used
+    used_passes_configs = get_used_passes_configs(run_config)
     target_not_used = (
         # no evaluator given (also implies no search)
         engine.evaluator_config is None
         # not using auto optimizer
-        and used_passes
+        and used_passes_configs
         # no pass specific evaluator
         # no pass needs to run on target
         and all(
-            pass_config.evaluator is None and Pass.registry[pass_config.type.lower()].run_on_target is False
-            for pass_config in used_passes
+            pass_config.evaluator is None and not get_run_on_target(package_config, pass_config)
+            for pass_config in used_passes_configs
         )
     )
+
+    is_ep_required = auto_optimizer_enabled or is_execution_provider_required(run_config, package_config)
     accelerator_specs = create_accelerators(
         engine.target_config, skip_supported_eps_check=target_not_used, is_ep_required=is_ep_required
     )
 
-    pass_list = []
-    acc_list = []
-    if auto_optimizer_enabled:
-        # For auto optimizer, Olive generates passes and pass_flows for each accelerator
-        # that means, the passes and pass_flows might be different for each accelerator
-        for acc_spec in accelerator_specs:
-            _passes, pass_flows = AutoOptimizer(
-                input_model,
-                engine.evaluator_config,
-                acc_spec,
-                run_config.auto_optimizer_config,
-                run_config.data_configs,
-            ).suggest()
-            pass_list.append(({k: RunPassConfig.parse_obj(v) for k, v in _passes.items()}, pass_flows))
-            acc_list.append([acc_spec])
-    else:
-        # For non-auto-optimizer case, Olive uses the same passes and pass_flows for all accelerators
-        # if user needs different passes and pass_flows for each accelerator, they need to write multiple
-        # config files.
-        pass_list.append((run_config.passes, run_config.pass_flows))
-        acc_list.append(accelerator_specs)
+    # Set passes with the engine
+    engine.set_input_passes_configs(run_config.passes)
 
-    run_rls = {}
-    # Note that, in Olive, there are two positions where the accelerator_specs are looped over:
-    # 1. olive workflow run level: this is where the accelerator_specs are created and passed to
-    # the engine. In this level, accelerator specs can be used to generate passes and pass_flows.
-    # 2. engine level: this is where the accelerator_specs are looped over to run the passes.
-    # TODO(anyone): refactor the code to remove the engine level loop if possible.
-    # For time being, we are keeping both loops, but in future, we might want to refactor the code
-    # to remove engine level loop and pass the accelerator_specs to the engine directly.
-    for accelerator_spec, (passes, pass_flows) in zip(acc_list, pass_list):
-        engine.reset_passes()
-        pass_flows_to_run = {p for ps in pass_flows for p in ps} if pass_flows else set(passes.keys())
-        # First pass registers the necessary module implementation
-        for pass_name in pass_flows_to_run:
-            pass_config = passes[pass_name]
-            if pass_config.type.lower() in Pass.registry:
-                logger.debug("Pass %s already registered", pass_config.type)
-            else:
-                logger.debug("Registering pass %s", pass_config.type)
-                package_config.import_pass_module(pass_config.type)
-
-        # Second pass, initializes the pass and registers it with the engine
-        for pass_name, pass_config in passes.items():
-            if pass_name in pass_flows_to_run:
-                host = pass_config.host.create_system() if pass_config.host is not None else None
-                engine.register(
-                    Pass.registry[pass_config.type.lower()],
-                    config=pass_config.config,
-                    name=pass_name,
-                    host=host,
-                    evaluator_config=pass_config.evaluator,
-                )
-            engine.set_pass_flows(pass_flows)
-
-        # run
-        run_rls.update(
-            engine.run(
-                input_model,
-                accelerator_spec,
-                run_config.engine.packaging_config,
-                run_config.engine.output_dir,
-                run_config.engine.evaluate_input_model,
-                run_config.engine.log_to_file,
-                run_config.engine.log_severity_level,
-            )
-        )
-    return run_rls
+    # run
+    return engine.run(
+        run_config.input_model,
+        accelerator_specs,
+        run_config.engine.packaging_config,
+        run_config.engine.output_dir,
+        run_config.engine.evaluate_input_model,
+        run_config.engine.log_to_file,
+        run_config.engine.log_severity_level,
+    )
 
 
 def set_olive_config_for_aml_system(olive_config: dict):
@@ -386,13 +324,10 @@ def get_local_ort_packages() -> List[str]:
     return local_ort_packages
 
 
-def get_used_passes(run_config: RunConfig) -> Generator["RunPassConfig", None, None]:
-    if run_config.pass_flows:
-        passes = set()
-        for pass_flow in run_config.pass_flows:
-            for pass_name in pass_flow:
-                if run_config.passes[pass_name].type not in passes:
-                    passes.add(run_config.passes[pass_name].type)
-                    yield run_config.passes[pass_name]
-    elif run_config.passes:
-        yield from run_config.passes.values()
+def get_used_passes_configs(run_config: RunConfig) -> List["RunPassConfig"]:
+    return [pass_config for _, pass_configs in run_config.passes.items() for pass_config in pass_configs]
+
+
+def get_run_on_target(package_config: OlivePackageConfig, pass_config: "RunPassConfig") -> bool:
+    pass_module_config = package_config.get_pass_module_config(pass_config.type)
+    return pass_module_config.run_on_target

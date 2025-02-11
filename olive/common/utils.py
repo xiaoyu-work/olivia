@@ -3,6 +3,7 @@
 # Licensed under the MIT License.
 # --------------------------------------------------------------------------
 import codecs
+import gc
 import hashlib
 import inspect
 import io
@@ -253,6 +254,27 @@ def tensor_data_to_device(data, device: str):
         return data
 
 
+def tensor_data_to_dtype(data, dtype):
+    import torch
+
+    if dtype is None:
+        return data
+
+    from torch import Tensor
+
+    if isinstance(data, Tensor) and data.dtype in {torch.bfloat16, torch.float16, torch.float32, torch.float64}:
+        return data.to(dtype)
+    if isinstance(data, dict):
+        return {k: tensor_data_to_dtype(v, dtype) for k, v in data.items()}
+    if isinstance(data, list):
+        return [tensor_data_to_dtype(v, dtype) for v in data]
+    if isinstance(data, tuple):
+        return tuple(tensor_data_to_dtype(v, dtype) for v in data)
+    if isinstance(data, set):
+        return {tensor_data_to_dtype(v, dtype) for v in data}
+    return data
+
+
 def resolve_torch_dtype(dtype):
     """Get torch dtype from string or torch dtype.
 
@@ -328,6 +350,18 @@ def find_submodules(module, submodule_types, full_name=False):
             else:
                 submodules.add(name.split(".")[-1])
     return list(submodules) if submodules else None
+
+
+def replace_submodules(module, submodule_types, new_submodule_func):
+    """Replace all submodules of a given type in a module.
+
+    :param module: module to search.
+    :param submodule_type: type of submodule to search for. Can be a single type or a tuple of types.
+    :param new_submodule_func: function to create new submodule. Should take old submodule as input.
+    """
+    for name, submodule in module.named_modules():
+        if isinstance(submodule, submodule_types):
+            set_attr(module, name, new_submodule_func(submodule))
 
 
 def all_files(path, ignore=None):
@@ -447,16 +481,18 @@ def exclude_keys(original_dict: Dict, keys_to_exclude):
     return {k: v for k, v in original_dict.items() if k not in keys_to_exclude}
 
 
-def find_first_matched_value(original_dict: Dict, keys: Union[str, Tuple, List[str]], raise_key_error=False):
+def find_first_matched_value(original, keys: Union[str, Tuple, List[str]], raise_key_error=False):
     if isinstance(keys, str):
         keys = [keys]
 
     for possible_name in keys:
-        if possible_name in original_dict:
-            return original_dict[possible_name]
+        if isinstance(original, dict) and possible_name in original:
+            return original[possible_name]
+        elif hasattr(original, possible_name):
+            return getattr(original, possible_name)
 
     if raise_key_error:
-        raise KeyError(f"Keys {keys} not found in {original_dict}")
+        raise KeyError(f"Keys {keys} not found in {original}")
     return None
 
 
@@ -624,3 +660,12 @@ def load_weights(path: Union[str, Path], file_format: Optional[WeightsFileFormat
 def unescaped_str(arg_str):
     """Decode strings without escaping."""
     return codecs.decode(arg_str, "unicode_escape")
+
+
+def cleanup_memory():
+    """Cleanup memory by running garbage collection and emptying CUDA cache."""
+    import torch
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()

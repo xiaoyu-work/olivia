@@ -7,7 +7,7 @@ import json
 import logging
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Union
+from typing import Any, Dict, Optional, Union
 
 import onnxruntime as ort
 
@@ -23,7 +23,7 @@ from olive.hardware.accelerator import AcceleratorLookup, AcceleratorSpec
 from olive.model import ONNXModelHandler
 from olive.passes import Pass
 from olive.passes.pass_config import PassConfigParam, get_user_script_data_config
-from olive.strategy.search_parameter import Categorical
+from olive.search.search_parameter import Categorical
 
 logger = logging.getLogger(__name__)
 
@@ -79,8 +79,6 @@ def get_thread_affinity_nums(affinity_str):
 class OrtSessionParamsTuning(Pass):
     """Optimize ONNX Runtime inference settings."""
 
-    run_on_target = True
-
     @staticmethod
     def is_accelerator_agnostic(accelerator_spec: AcceleratorSpec) -> bool:
         """Override this method to return False by using the accelerator spec information."""
@@ -116,25 +114,25 @@ class OrtSessionParamsTuning(Pass):
             "providers_list": PassConfigParam(
                 type_=str,
                 default_value=execution_provider,
-                searchable_values=Categorical(AcceleratorLookup.get_execution_providers_for_device(device)),
+                search_defaults=Categorical(AcceleratorLookup.get_execution_providers_for_device(device)),
                 description="Execution providers framework list to execute the ONNX models.",
             ),
             "provider_options_list": PassConfigParam(
                 type_=Dict[str, Any],
                 default_value={},
-                searchable_values=Categorical([{}]),
+                search_defaults=Categorical([{}]),
                 description="Execution provider options to execute the ONNX models.",
             ),
             "execution_mode_list": PassConfigParam(
                 type_=int,
                 default_value=None,
-                searchable_values=Categorical([None]),
+                search_defaults=Categorical([None]),
                 description="Parallelism list between operators.",
             ),
             "opt_level_list": PassConfigParam(
                 type_=int,
                 default_value=None,
-                searchable_values=Categorical([None]),
+                search_defaults=Categorical([None]),
                 description="Optimization level list for ONNX model.",
             ),
             "trt_fp16_enable": PassConfigParam(
@@ -143,13 +141,13 @@ class OrtSessionParamsTuning(Pass):
             "intra_thread_num_list": PassConfigParam(
                 type_=int,
                 default_value=None,
-                searchable_values=Categorical([None]),
+                search_defaults=Categorical([None]),
                 description="List of intra thread number for test.",
             ),
             "inter_thread_num_list": PassConfigParam(
                 type_=int,
                 default_value=None,
-                searchable_values=Categorical([None]),
+                search_defaults=Categorical([None]),
                 description="List of inter thread number for test.",
             ),
             "extra_session_config": PassConfigParam(
@@ -172,15 +170,22 @@ class OrtSessionParamsTuning(Pass):
             ),
         }
 
-    def validate_search_point(
-        self, search_point: Dict[str, Any], accelerator_spec: AcceleratorSpec, with_fixed_value: bool = False
+    @classmethod
+    def validate_config(
+        cls,
+        config: Dict[str, Any],
+        accelerator_spec: AcceleratorSpec,
+        disable_search: Optional[bool] = False,
     ) -> bool:
         """Validate the search point for the pass."""
-        config = self.config_at_search_point(search_point or {})
+        if not super().validate_config(config, accelerator_spec, disable_search):
+            return False
+
+        config_cls, _ = cls.get_config_class(accelerator_spec, disable_search)
+        config_cls.__config__.extra = Extra.allow
+        config = config_cls(**config)
 
         # Rename the search parameters with atomic/singular names for clarity
-        self._config_class.__config__.extra = Extra.allow
-        config = self._config_class(**config)
         config.execution_provider = config.providers_list
         config.provider_options = config.provider_options_list
         config.execution_mode = config.execution_mode_list
@@ -248,14 +253,11 @@ class OrtSessionParamsTuning(Pass):
             return False
 
         # TODO(myguo): we need disable the following check when we enable cache in perf tuning.
-        if (
-            config.execution_provider != self.accelerator_spec.execution_provider
-            and not config.force_evaluate_other_eps
-        ):
+        if config.execution_provider != accelerator_spec.execution_provider and not config.force_evaluate_other_eps:
             logger.warning(
                 "Ignore perf tuning for EP %s since current pass EP is %s",
                 config.execution_provider,
-                self.accelerator_spec.execution_provider,
+                accelerator_spec.execution_provider,
             )
             return False
 

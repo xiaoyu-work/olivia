@@ -4,12 +4,12 @@
 # --------------------------------------------------------------------------
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 import torch
 
 from olive.common.config_utils import validate_config
-from olive.common.hf.utils import get_model_max_length
+from olive.common.hf.wrapper import ModelWrapper
 from olive.common.utils import get_attr, tensor_data_to_device
 from olive.data.config import DataConfig
 from olive.hardware.accelerator import AcceleratorSpec, Device
@@ -17,12 +17,7 @@ from olive.model import HfModelHandler, PyTorchModelHandler
 from olive.passes import Pass
 from olive.passes.olive_pass import PassConfigParam
 from olive.passes.pytorch.common import inherit_pytorch_from_hf
-from olive.passes.pytorch.sparsegpt_utils import (
-    get_layer_submodules,
-    get_layers,
-    supported_models,
-    validate_min_max_layers,
-)
+from olive.passes.pytorch.sparsegpt_utils import get_layer_submodules, supported_models, validate_min_max_layers
 
 logger = logging.getLogger(__name__)
 
@@ -67,12 +62,19 @@ class TorchTRTConversion(Pass):
             ),
         }
 
-    def validate_search_point(
-        self, search_point: Dict[str, Any], accelerator_spec: AcceleratorSpec, with_fixed_value: bool = False
+    @classmethod
+    def validate_config(
+        cls,
+        config: Dict[str, Any],
+        accelerator_spec: AcceleratorSpec,
+        disable_search: Optional[bool] = False,
     ) -> bool:
+        if not super().validate_config(config, accelerator_spec, disable_search):
+            return False
+
         # since the run will leverage the host device to move the model to device,
         # we need to check if the host device is GPU
-        if self.host_device != Device.GPU:
+        if accelerator_spec.accelerator_type != Device.GPU:
             logger.info("TorchTRTConversion only supports GPU.")
             return False
         return True
@@ -96,8 +98,6 @@ class TorchTRTConversion(Pass):
         first_batch = data_config.to_data_container().get_first_batch()[0]
         first_batch = tensor_data_to_device(first_batch, device=device)
         batch_size = first_batch["input_ids"].shape[0]
-        # get max sequence length
-        seqlen = get_model_max_length(model.model_path, fail_on_not_found=True)
 
         # load model
         pytorch_model = model.load_model(cache_model=False)
@@ -111,8 +111,14 @@ class TorchTRTConversion(Pass):
         use_cache = pytorch_model.config.use_cache
         pytorch_model.config.use_cache = False
 
+        # create model adapter
+        model_wrapper = ModelWrapper.from_model(pytorch_model)
+
+        # get max sequence length
+        seqlen = model_wrapper.max_length or 2048
+
         # get module list of layers
-        layers = get_layers(pytorch_model, model_type)
+        layers = model_wrapper.get_layers(False)
 
         # get layer information
         min_layer, max_layer = validate_min_max_layers(config["min_layer"], config["max_layer"], len(layers))

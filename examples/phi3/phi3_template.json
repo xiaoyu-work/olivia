@@ -65,7 +65,7 @@
             "type": "LoRA",
             "train_data_config": "tiny_codes_train",
             "eval_data_config": "tiny_codes_eval",
-            "lora_r": 64,
+            "r": 64,
             "training_args": {
                 "per_device_train_batch_size": 1,
                 "per_device_eval_batch_size": 1,
@@ -80,7 +80,7 @@
             "type": "QLoRA",
             "train_data_config": "tiny_codes_train",
             "eval_data_config": "tiny_codes_eval",
-            "lora_r": 64,
+            "r": 64,
             "training_args": {
                 "per_device_train_batch_size": 1,
                 "per_device_eval_batch_size": 1,
@@ -103,19 +103,8 @@
             "execution_providers_list": [ "CUDAExecutionProvider" ],
             "opt_level_list": [ 0, 1 ],
             "execution_mode_list": [ 0, 1 ]
-        },
-        "quarot": {
-            "type": "QuaRot",
-            "w_rtn": true,
-            "rotate": true,
-            "w_bits": 4,
-            "a_bits": 4,
-            "k_bits": 4,
-            "v_bits": 4,
-            "calibration_data_config": "wikitext2_train"
         }
     },
-    "pass_flows": [ [ "<place_holder>" ] ],
     "cache_dir": "cache",
     "output_dir": "models",
     "host": "local_system",

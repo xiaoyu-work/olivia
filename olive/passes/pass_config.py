@@ -3,15 +3,22 @@
 # Licensed under the MIT License.
 # --------------------------------------------------------------------------
 from pathlib import Path
-from typing import Callable, ClassVar, Dict, List, Optional, Set, Type, Union
+from typing import Any, Callable, ClassVar, Dict, List, Optional, Set, Type, Union
 
-from olive.common.config_utils import ConfigBase, ConfigParam, ParamCategory, validate_object
+from olive.common.config_utils import (
+    ConfigBase,
+    ConfigParam,
+    NestedConfig,
+    ParamCategory,
+    validate_lowercase,
+    validate_object,
+)
 from olive.common.pydantic_v1 import Field, create_model, validator
 from olive.common.utils import StrEnumBase
 from olive.hardware.accelerator import Device
 from olive.hardware.constants import DEVICE_TO_EXECUTION_PROVIDERS
 from olive.resource_path import validate_resource_path
-from olive.strategy.search_parameter import SearchParameter, SpecialParamValue, json_to_search_parameter
+from olive.search.search_parameter import SearchParameter, SpecialParamValue, json_to_search_parameter
 
 
 class PassParamDefault(StrEnumBase):
@@ -85,7 +92,7 @@ def get_user_script_data_config(
 DEFAULT_SET = set(PassParamDefault)
 
 
-class PassConfigBase(ConfigBase):
+class BasePassConfig(ConfigBase):
 
     @validator("*", pre=True)
     def _validate_default_str(cls, v, field):
@@ -104,12 +111,30 @@ class PassConfigBase(ConfigBase):
         return v
 
 
+class AbstractPassConfig(NestedConfig):
+    """Base class for pass configuration."""
+
+    type: str = Field(description="The type of the pass.")
+    config: Dict[str, Any] = Field(
+        None,
+        description=(
+            "The configuration of the pass. Values for required parameters must be provided. For optional parameters,"
+            " default values or searchable values (if available and search is not disabled) will be used if not"
+            " provided."
+        ),
+    )
+
+    @validator("type", pre=True)
+    def validate_type(cls, v):
+        return validate_lowercase(v)
+
+
 def create_config_class(
     pass_type: str,
     default_config: Dict[str, PassConfigParam],
     disable_search: Optional[bool] = False,
     validators: Dict[str, Callable] = None,
-) -> Type[PassConfigBase]:
+) -> Type[BasePassConfig]:
     """Create a Pydantic model class from a configuration dictionary."""
     config = {}
     validators = validators.copy() if validators else {}
@@ -137,7 +162,7 @@ def create_config_class(
         else:
             config[param] = (type_, param_config.default_value)
 
-    return create_model(f"{pass_type}Config", **config, __base__=PassConfigBase, __validators__=validators)
+    return create_model(f"{pass_type}Config", **config, __base__=BasePassConfig, __validators__=validators)
 
 
 class PassModuleConfig(ConfigBase):
@@ -168,6 +193,14 @@ class PassModuleConfig(ConfigBase):
     supported_precisions: Set[str] = Field(default_factory=set)
     module_dependencies: List[str] = Field(default_factory=list)
     extra_dependencies: List[str] = Field(default_factory=list)
+
+    # Flag indicate whether the pass need to be run in target instead of host
+    run_on_target: bool = False
+
+    def set_class_variables(self, cls):
+        attrs = {"supported_providers", "supported_accelerators", "supported_precisions", "run_on_target"}
+        for attr in attrs:
+            setattr(cls, attr, getattr(self, attr))
 
     @validator("module_path", pre=True)
     def validate_module_path(cls, v):
