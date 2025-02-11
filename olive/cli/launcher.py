@@ -15,6 +15,7 @@ from olive.cli.finetune import FineTuneCommand
 from olive.cli.generate_adapter import GenerateAdapterCommand
 from olive.cli.generate_cost_model import GenerateCostModelCommand
 from olive.cli.manage_aml_compute import ManageAMLComputeCommand
+from olive.cli.optimize_onnx import OptimizeOnnxGraphCommand
 from olive.cli.quantize import QuantizeCommand
 from olive.cli.run import WorkflowRunCommand
 from olive.cli.session_params_tuning import SessionParamsTuningCommand
@@ -27,7 +28,7 @@ def get_cli_parser(called_as_console_script: bool = True) -> ArgumentParser:
     :param called_as_console_script: Whether the script was called as a console script.
     :return: The CLI parser.
     """
-    parser = ArgumentParser("Olive CLI tool", usage="olivia" if called_as_console_script else "python -m olivia")
+    parser = ArgumentParser("Olivia CLI tool", usage="olivia" if called_as_console_script else "python -m olivia")
     commands_parser = parser.add_subparsers()
 
     # Register commands
@@ -46,6 +47,7 @@ def get_cli_parser(called_as_console_script: bool = True) -> ArgumentParser:
     ManageAMLComputeCommand.register_subcommand(commands_parser)
     SharedCacheCommand.register_subcommand(commands_parser)
     ExtractAdaptersCommand.register_subcommand(commands_parser)
+    OptimizeOnnxGraphCommand.register_subcommand(commands_parser)
 
     return parser
 
@@ -75,7 +77,7 @@ def legacy_call(deprecated_module: str, command_name: str, *args):
     """
     warn(
         f"Running `python -m {deprecated_module}` is deprecated and might be removed in the future. Please use"
-        f" `olive {command_name}` or `python -m olive {command_name}` instead.",
+        f" `olivia {command_name}` or `python -m olivia {command_name}` instead.",
         FutureWarning,
     )
 
