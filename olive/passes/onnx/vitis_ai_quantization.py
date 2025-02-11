@@ -25,7 +25,7 @@ from olive.passes.onnx.common import (
 )
 from olive.passes.pass_config import PassConfigParam
 from olive.resource_path import LocalFile
-from olive.strategy.search_parameter import Boolean, Categorical, Conditional
+from olive.search.search_parameter import Boolean, Categorical, Conditional
 
 logger = logging.getLogger(__name__)
 
@@ -204,8 +204,6 @@ class VitisAIQuantization(Pass):
 
     We can search for best parameters for vai_q_onnx quantization at same time.
     """
-
-    run_on_target = True
 
     def _initialize(self):
         super()._initialize()

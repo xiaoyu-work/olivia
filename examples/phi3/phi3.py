@@ -71,11 +71,6 @@ def get_args(raw_args):
 
     quant_group = parser.add_mutually_exclusive_group()
     quant_group.add_argument(
-        "--quarot",
-        action="store_true",
-        help="Run QuaRot on a Hugging Face PyTorch model",
-    )
-    quant_group.add_argument(
         "--awq",
         action="store_true",
         help="Run AWQ on the base model or the finetuned model",
@@ -159,9 +154,6 @@ def main(raw_args=None):
 
     olive_run(run_config)
 
-    if args.quarot:
-        return
-
     if args.inference:
         if not args.chat_template:
             args.chat_template = (
@@ -199,7 +191,10 @@ def use_passes(template_json, *passes):
     else:
         del template_json["data_configs"]
 
-    template_json["pass_flows"] = [passes]
+    for pass_name in set(template_json["passes"].keys()):
+        if pass_name not in passes:
+            template_json["passes"].pop(pass_name, None)
+
     return template_json
 
 
@@ -210,17 +205,6 @@ def generate_config(args):
         template_json = json.load(f)
 
     config_prefix = "phi3_run_"
-
-    if args.quarot:
-        template_json = use_passes(template_json, "quarot")
-        template_json["systems"]["local_system"]["accelerators"] = [
-            {"device": "GPU", "execution_providers": ["CUDAExecutionProvider"]}
-        ]
-        new_json_file = f"{config_prefix}quarot.json"
-        with open(new_json_file, "w") as f:
-            json.dump(template_json, f, indent=4)
-
-        return new_json_file
 
     # use aml instance of model
     if args.source == "AzureML":
@@ -242,7 +226,7 @@ def generate_config(args):
 
     if args.tune_session_params:
         passes_to_use.append("tune_session_params")
-        template_json["search_strategy"] = {"execution_order": "joint", "search_algorithm": "exhaustive"}
+        template_json["search_strategy"] = {"execution_order": "joint", "sampler": "sequential"}
         template_json["evaluator"] = "common_evaluator"
     else:
         del template_json["evaluators"]

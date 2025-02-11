@@ -4,7 +4,7 @@
 # --------------------------------------------------------------------------
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Union
 
 from olive.common.config_utils import validate_config
 from olive.systems.common import AcceleratorConfig, SystemType
@@ -41,13 +41,7 @@ class OliveSystem(ABC):
         self.hf_token = hf_token
 
     @abstractmethod
-    def run_pass(
-        self,
-        the_pass: "Pass",
-        model_config: "ModelConfig",
-        output_model_path: str,
-        point: Optional[Dict[str, Any]] = None,
-    ) -> "ModelConfig":
+    def run_pass(self, the_pass: "Pass", model_config: "ModelConfig", output_model_path: str) -> "ModelConfig":
         """Run the pass on the model at a specific point in the search space."""
         raise NotImplementedError
 

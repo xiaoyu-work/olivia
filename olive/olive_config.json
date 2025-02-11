@@ -12,6 +12,12 @@
             "supported_accelerators": [ "*" ],
             "supported_precisions": [ "*" ]
         },
+        "GraphSurgeries": {
+            "module_path": "olive.passes.onnx.graph_surgeries.GraphSurgeries",
+            "supported_providers": [ "*" ],
+            "supported_accelerators": [ "*" ],
+            "supported_precisions": [ "*" ]
+        },
         "ExtractAdapters": {
             "module_path": "olive.passes.onnx.extract_adapters.ExtractAdapters",
             "supported_providers": [ "*" ],
@@ -30,21 +36,24 @@
             "supported_providers": [ "CPUExecutionProvider" ],
             "supported_accelerators": [ "cpu" ],
             "supported_precisions": [ "int4", "int8" ],
-            "extra_dependencies": [ "inc" ]
+            "extra_dependencies": [ "inc" ],
+            "run_on_target": true
         },
         "IncQuantization": {
             "module_path": "olive.passes.onnx.inc_quantization.IncQuantization",
             "supported_providers": [ "CPUExecutionProvider" ],
             "supported_accelerators": [ "cpu" ],
             "supported_precisions": [ "int4", "int8" ],
-            "extra_dependencies": [ "inc" ]
+            "extra_dependencies": [ "inc" ],
+            "run_on_target": true
         },
         "IncStaticQuantization": {
             "module_path": "olive.passes.onnx.inc_quantization.IncStaticQuantization",
             "supported_providers": [ "CPUExecutionProvider" ],
             "supported_accelerators": [ "cpu" ],
             "supported_precisions": [ "int4", "int8" ],
-            "extra_dependencies": [ "inc" ]
+            "extra_dependencies": [ "inc" ],
+            "run_on_target": true
         },
         "InsertBeamSearch": {
             "module_path": "olive.passes.onnx.insert_beam_search.InsertBeamSearch",
@@ -110,7 +119,8 @@
             "module_path": "olive.passes.onnx.peephole_optimizer.OnnxPeepholeOptimizer",
             "supported_providers": [ "*" ],
             "supported_accelerators": [ "*" ],
-            "supported_precisions": [ "*" ]
+            "supported_precisions": [ "*" ],
+            "extra_dependencies": [ "onnxoptimizer", "onnxscript" ]
         },
         "OnnxOpVersionConversion": {
             "module_path": "olive.passes.onnx.conversion.OnnxOpVersionConversion",
@@ -142,7 +152,8 @@
             "supported_providers": [ "*" ],
             "supported_accelerators": [ "*" ],
             "supported_precisions": [ "*" ],
-            "extra_dependencies": [ "optimum" ]
+            "extra_dependencies": [ "optimum" ],
+            "run_on_target": true
         },
         "OrtMixedPrecision": {
             "module_path": "olive.passes.onnx.mixed_precision.OrtMixedPrecision",
@@ -155,7 +166,8 @@
             "supported_providers": [ "*" ],
             "supported_accelerators": [ "*" ],
             "supported_precisions": [ "*" ],
-            "module_dependencies": [ "psutil" ]
+            "module_dependencies": [ "psutil" ],
+            "run_on_target": true
         },
         "OrtTransformersOptimization": {
             "module_path": "olive.passes.onnx.transformer_optimization.OrtTransformersOptimization",
@@ -173,7 +185,8 @@
             "module_path": "olive.passes.onnx.vitis_ai_quantization.VitisAIQuantization",
             "supported_providers": [ "VitisAIExecutionProvider" ],
             "supported_accelerators": [ "npu" ],
-            "supported_precisions": [ "int8" ]
+            "supported_precisions": [ "int8" ],
+            "run_on_target": true
         },
         "VitisQDQQuantizer": {
             "module_path": "olive.passes.onnx.vitis_ai.quantizer.VitisQDQQuantizer",
@@ -201,29 +214,29 @@
         },
         "OpenVINOConversion": {
             "module_path": "olive.passes.openvino.conversion.OpenVINOConversion",
-            "supported_providers": [ "OpenVINOExecutionProvider" ],
-            "supported_accelerators": [ "cpu", "gpu", "npu" ],
+            "supported_providers": [ "*" ],
+            "supported_accelerators": [ "*" ],
             "supported_precisions": [ "*" ],
             "extra_dependencies": [ "openvino" ]
         },
         "OpenVINOQuantization": {
             "module_path": "olive.passes.openvino.quantization.OpenVINOQuantization",
-            "supported_providers": [ "OpenVINOExecutionProvider" ],
-            "supported_accelerators": [ "cpu", "gpu", "npu" ],
+            "supported_providers": [ "*" ],
+            "supported_accelerators": [ "*" ],
             "supported_precisions": [ "*" ],
             "extra_dependencies": [ "openvino" ]
         },
         "AutoAWQQuantizer": {
             "module_path": "olive.passes.pytorch.autoawq.AutoAWQQuantizer",
-            "supported_providers": [ "CPUExecutionProvider" ],
-            "supported_accelerators": [ "cpu" ],
+            "supported_providers": [ "*" ],
+            "supported_accelerators": [ "*" ],
             "supported_precisions": [ "int4", "int8", "int16", "uint4", "uint8", "uint16" ],
             "module_dependencies": [ "autoawq" ]
         },
         "GptqQuantizer": {
             "module_path": "olive.passes.pytorch.gptq.GptqQuantizer",
-            "supported_providers": [ "CPUExecutionProvider" ],
-            "supported_accelerators": [ "cpu" ],
+            "supported_providers": [ "*" ],
+            "supported_accelerators": [ "*" ],
             "supported_precisions": [ "int4", "int8", "int16", "uint4", "uint8", "uint16" ],
             "module_dependencies": [ "auto-gptq", "optimum" ]
         },
@@ -252,6 +265,20 @@
             "supported_precisions": [ "*" ],
             "extra_dependencies": [ "lora" ]
         },
+        "LoHa": {
+            "module_path": "olive.passes.pytorch.lora.LoHa",
+            "supported_providers": [ "*" ],
+            "supported_accelerators": [ "*" ],
+            "supported_precisions": [ "*" ],
+            "extra_dependencies": [ "lora" ]
+        },
+        "LoKr": {
+            "module_path": "olive.passes.pytorch.lora.LoKr",
+            "supported_providers": [ "*" ],
+            "supported_accelerators": [ "*" ],
+            "supported_precisions": [ "*" ],
+            "extra_dependencies": [ "lora" ]
+        },
         "PyTorchTensorParallel": {
             "module_path": "olive.passes.pytorch.tensor_parallel.PyTorchTensorParallel",
             "supported_providers": [ "*" ],
@@ -265,6 +292,13 @@
             "supported_precisions": [ "*" ],
             "extra_dependencies": [ "bnb", "lora" ]
         },
+        "DoRA": {
+            "module_path": "olive.passes.pytorch.lora.DoRA",
+            "supported_providers": [ "*" ],
+            "supported_accelerators": [ "*" ],
+            "supported_precisions": [ "*" ],
+            "extra_dependencies": [ "bnb", "lora" ]
+        },
         "QuantizationAwareTraining": {
             "module_path": "olive.passes.pytorch.quantization_aware_training.QuantizationAwareTraining",
             "supported_providers": [ "*" ],
@@ -272,8 +306,20 @@
             "supported_precisions": [ "*" ],
             "module_dependencies": [ "pytorch-lightning" ]
         },
+        "QuaRot": {
+            "module_path": "olive.passes.pytorch.rotate.QuaRot",
+            "supported_providers": [ "*" ],
+            "supported_accelerators": [ "*" ],
+            "supported_precisions": [ "*" ]
+        },
         "SparseGPT": {
             "module_path": "olive.passes.pytorch.sparsegpt.SparseGPT",
+            "supported_providers": [ "*" ],
+            "supported_accelerators": [ "*" ],
+            "supported_precisions": [ "*" ]
+        },
+        "SpinQuant": {
+            "module_path": "olive.passes.pytorch.rotate.SpinQuant",
             "supported_providers": [ "*" ],
             "supported_accelerators": [ "*" ],
             "supported_precisions": [ "*" ]
@@ -283,13 +329,6 @@
             "supported_providers": [ "*" ],
             "supported_accelerators": [ "*" ],
             "supported_precisions": [ "*" ]
-        },
-        "QuaRot": {
-            "module_path": "olive.passes.pytorch.quarot.QuaRot",
-            "supported_providers": [ "CPUExecutionProvider" ],
-            "supported_accelerators": [ "cpu" ],
-            "supported_precisions": [ "int4", "int8", "int16", "uint4", "uint8", "uint16" ],
-            "extra_dependencies": [ "flash-attn" ]
         },
         "TorchTRTConversion": {
             "module_path": "olive.passes.pytorch.torch_trt_conversion.TorchTRTConversion",
@@ -345,13 +384,13 @@
     "extra_dependencies": {
         "auto-opt": [ "optimum" ],
         "azureml": [ "azure-ai-ml>=1.11.1", "azure-keyvault-secrets", "azure-identity", "azureml-fsspec" ],
-        "bnb": [ "bitsandbytes" ],
+        "bnb": [ "bitsandbytes", "triton" ],
         "capture-onnx-graph": [ "onnxruntime-genai", "optimum" ],
         "cpu": [ "onnxruntime" ],
         "directml": [ "onnxruntime-directml" ],
         "docker": [ "docker" ],
         "shared-cache": [ "azure-identity", "azure-storage-blob" ],
-        "finetune": [ "onnxruntime-genai", "optimum", "accelerate>=0.30.0", "peft", "scipy", "bitsandbytes" ],
+        "finetune": [ "onnxruntime-genai", "optimum", "accelerate>=0.30.0", "peft", "scipy", "bitsandbytes", "triton" ],
         "flash-attn": [ "flash_attn" ],
         "gpu": [ "onnxruntime-gpu" ],
         "inc": [ "neural-compressor" ],
@@ -361,6 +400,7 @@
         "optimum": [ "optimum" ],
         "ort-genai": [ "onnxruntime-genai" ],
         "ort": [ "onnxruntime", "onnxruntime-directml", "onnxruntime-gpu", "onnxruntime-openvino", "numpy<2.0" ],
+        "qnn": [ "onnxruntime-qnn" ],
         "tf": [ "tensorflow==1.15.0" ],
         "torch-tensorrt": [ "torch-tensorrt" ],
         "tune-session-params": [ "psutil" ]

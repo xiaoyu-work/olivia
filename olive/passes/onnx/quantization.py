@@ -7,7 +7,7 @@ import tempfile
 from copy import deepcopy
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import onnx
 from packaging import version
@@ -29,7 +29,7 @@ from olive.passes.onnx.common import (
 )
 from olive.passes.pass_config import PassConfigParam
 from olive.resource_path import LocalFile
-from olive.strategy.search_parameter import Boolean, Categorical, Conditional, ConditionalDefault
+from olive.search.search_parameter import Boolean, Categorical, Conditional, ConditionalDefault
 
 logger = logging.getLogger(__name__)
 
@@ -324,17 +324,24 @@ class OnnxQuantization(Pass):
         config.update(get_external_data_config())
         return config
 
-    def validate_search_point(
-        self, search_point: Dict[str, Any], accelerator_spec: AcceleratorSpec, with_fixed_value: bool = False
+    @classmethod
+    def validate_config(
+        cls,
+        config: Dict[str, Any],
+        accelerator_spec: AcceleratorSpec,
+        disable_search: Optional[bool] = False,
     ) -> bool:
-        config = search_point or {}
-        if with_fixed_value:
-            config = self.config_at_search_point(search_point)
-        if config["quant_mode"] == "static":
+        if not super().validate_config(config, accelerator_spec, disable_search):
+            return False
+
+        config_cls, _ = cls.get_config_class(accelerator_spec, disable_search)
+        config = config_cls(**config)
+
+        if config.quant_mode == "static":
             if (
-                config["weight_type"] == "QInt8"
-                and config["activation_type"] == "QInt8"
-                and config["quant_format"] == "QOperator"
+                config.weight_type == "QInt8"
+                and config.activation_type == "QInt8"
+                and config.quant_format == "QOperator"
             ):
                 # S8S8 with QOperator will be slow on x86-64 CPUs and should be avoided in general.
                 # https://onnxruntime.ai/docs/performance/model-optimizations/quantization.html#data-type-selection
@@ -342,7 +349,7 @@ class OnnxQuantization(Pass):
                 logger.warning(
                     "S8S8 with QOperator will be slow on x86-64 CPUs and should be avoided in general, try QDQ instead."
                 )
-            if config["EnableSubgraph"] is True:
+            if config.EnableSubgraph is True:
                 logger.info("EnableSubgraph is not supported for static quantization.")
                 return False
         return True
@@ -364,7 +371,7 @@ class OnnxQuantization(Pass):
         if is_static:
             assert config["data_config"], "data_config is required for static quantization."
             # whether to prepare qnn config
-            # we do the version check here and not in `validate_search_point` since search point validation
+            # we do the version check here and not in `validate_config` since search point validation
             # is done by the engine. Unless the host is local system, the ort version of the host is
             # not known by the engine when the search point is validated.
             if config["prepare_qnn_config"] and version.parse(OrtVersion) < version.parse("1.17.0"):
@@ -601,7 +608,6 @@ class OnnxStaticQuantization(OnnxQuantization):
             config["activation_type"].search_defaults = Categorical(["QInt8", "QUInt8", "QUInt16", "QInt16"])
             config["weight_type"].search_defaults = Categorical(["QInt8", "QUInt8", "QUInt16", "QInt16"])
             config["prepare_qnn_config"].default_value = True
-            config["quant_preprocess"].default_value = False
             # in QNN EP, the default value WeightSymmetric is None
             # but in base quantizer, the default value is True.
             config["WeightSymmetric"].default_value = None
@@ -609,6 +615,8 @@ class OnnxStaticQuantization(OnnxQuantization):
 
 
 class OnnxMatMul4Quantizer(Pass):
+    """Quantize ONNX models' MatMul operations to 4-bit weights."""
+
     @classmethod
     def _default_config(cls, accelerator_spec: AcceleratorSpec) -> Dict[str, PassConfigParam]:
         return {

@@ -232,6 +232,24 @@ class ModelOptimizer:
             logger.debug("Fused %d redundant Reshape operators", num_changed)
             o_model.prune_graph()
 
+    def onnxscript_optimize(self):
+        try:
+            import onnxscript
+        except ImportError:
+            logger.warning("Please install `onnxscript` to apply more optimization.")
+            return
+
+        onnxscript.optimizer.optimize(self.model)
+
+    def onnxoptimizer_optimize(self):
+        try:
+            from onnxoptimizer import optimize
+        except ImportError:
+            logger.warning("Please install `onnxoptimizer` to apply more optimization.")
+            return
+
+        self.model = optimize(self.model)
+
 
 class OnnxPeepholeOptimizer(Pass):
     """Optimize ONNX model by fusing nodes."""
@@ -247,6 +265,8 @@ class OnnxPeepholeOptimizer(Pass):
 
         # optimize model
         peephole_optimizer = ModelOptimizer(model.model_path)
+        peephole_optimizer.onnxscript_optimize()
+        peephole_optimizer.onnxoptimizer_optimize()
         peephole_optimizer.fuse_transpose_qat()
         peephole_optimizer.patch_unsupported_argmax_operator()
         peephole_optimizer.fuse_reshape_operations()

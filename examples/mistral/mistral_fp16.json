@@ -41,10 +41,10 @@
         "session_params_tuning": {
             "type": "OrtSessionParamsTuning",
             "data_config": "transformer_token_dummy_data",
+            "io_bind": true,
             "enable_profiling": false
         }
     },
-    "pass_flows": [ [ "convert", "optimize", "session_params_tuning" ] ],
     "evaluate_input_model": false,
     "evaluator": "common_evaluator",
     "host": "local_system",
