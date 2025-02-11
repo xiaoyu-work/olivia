@@ -62,7 +62,7 @@ long_description = (
 description = long_description.split(".", maxsplit=1)[0] + "."
 
 setup(
-    name="olive-ai",
+    name="olivia",
     version=VERSION,
     description=description,
     long_description=long_description,
@@ -86,6 +86,6 @@ setup(
     },
     data_files=[],
     entry_points={
-        "console_scripts": ["olive=olive.cli.launcher:main"],
+        "console_scripts": ["olivia=olive.cli.launcher:main"],
     },
 )

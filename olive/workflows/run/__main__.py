@@ -7,4 +7,4 @@ if __name__ == "__main__":
 
     from olive.cli.launcher import legacy_call
 
-    legacy_call("olive.workflows.run", "run", *sys.argv[1:])
+    legacy_call("olivia.workflows.run", "run", *sys.argv[1:])
