@@ -5,7 +5,14 @@ Modified from [Microsoft/Olive](https://github.com/microsoft/Olive) to be more u
 
 ## New features:
 * Optimize onnx model by CLI:  
-  `olive optimize-onnx-graph -m <input_model> -o <output_folder>`
+  `olivia optimize-onnx-graph -m <input_model> -o <output_folder>`
+* Get HF model IO by CLI:  
+  `olivia io -m <hf_model_name> -t <task>`  
+  e.g. `olivia io -m microsoft/resnet-50 -t image-classification`
+  ```
+  model: microsoft/resnet-50 task: image-classification has IO config: {'input_names': ['pixel_values'], 'output_names': ['logits'], 'dynamic_axes': {'pixel_values': {0: 'batch_size', 1: 'num_channels', 2: 'height', 3: 'width'}, 'logits': {0: 'batch_size'}}, 'dynamic_shapes': {'pixel_values': {0: 'batch_size', 1: 'num_channels', 2: 'height', 3: 'width'}}, 'input_shapes': [[2, 3, 64, 64]]}
+  ```
+    
 
 <div align="center">
   <picture>

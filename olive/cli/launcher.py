@@ -14,6 +14,7 @@ from olive.cli.extract_adapters import ExtractAdaptersCommand
 from olive.cli.finetune import FineTuneCommand
 from olive.cli.generate_adapter import GenerateAdapterCommand
 from olive.cli.generate_cost_model import GenerateCostModelCommand
+from olive.cli.get_io_config import GetIoConfigCommand
 from olive.cli.manage_aml_compute import ManageAMLComputeCommand
 from olive.cli.optimize_onnx import OptimizeOnnxGraphCommand
 from olive.cli.quantize import QuantizeCommand
@@ -23,13 +24,13 @@ from olive.cli.shared_cache import SharedCacheCommand
 
 
 def get_cli_parser(called_as_console_script: bool = True) -> ArgumentParser:
-    """Get the CLI parser for Olive.
+    """Get the CLI parser for Olivia.
 
     :param called_as_console_script: Whether the script was called as a console script.
     :return: The CLI parser.
     """
     prog = "olivia" if called_as_console_script else "python -m olivia"
-    parser = ArgumentParser("Olivia CLI tool", prog=prog, usage=prog)
+    parser = ArgumentParser(description="Olivia CLI tool", prog=prog, usage="olivia")
     commands_parser = parser.add_subparsers()
 
     # Register commands
@@ -49,6 +50,7 @@ def get_cli_parser(called_as_console_script: bool = True) -> ArgumentParser:
     SharedCacheCommand.register_subcommand(commands_parser)
     ExtractAdaptersCommand.register_subcommand(commands_parser)
     OptimizeOnnxGraphCommand.register_subcommand(commands_parser)
+    GetIoConfigCommand.register_subcommand(commands_parser)
 
     return parser
 
