@@ -3,6 +3,10 @@
 Modified from [Microsoft/Olive](https://github.com/microsoft/Olive) to be more user-friendly and accessible to a broader audience, not limited to data scientists and engineers.
 
 
+## New features:
+* Optimize onnx model by CLI:  
+  `olive optimize-onnx-graph -m <input_model> -o <output_folder>`
+
 <div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/source/images/olive-white-text.png">
