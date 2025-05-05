@@ -31,7 +31,7 @@ You can name the workflow run by specifying `workflow_id` section in your config
 
 ## Workflow Host
 
-Workflow host is where the Olive workflow will be run. The default value is `None`. If `None` set for workflow host, Olive will run workflow locally. It suppurts `AzureML` system for now.
+Workflow host is where the Olive workflow will be run. The default value is `None`. If `None` set for workflow host, Olive will run workflow locally. It supports `AzureML` system for now.
 
 ## Azure ML Client
 
@@ -405,7 +405,6 @@ Please also find the detailed options from following table for each pass:
 | [IncQuantization](../../reference/pass.rst#_inc_quantization) | Quantize ONNX model with Intel® Neural Compressor where we can search for best parameters for static/dynamic quantization at same time. |
 | [VitisAIQuantization](../../reference/pass.rst#_vitis_ai_quantization) | AMD-Xilinx Vitis-AI Quantization Pass. |
 | [AppendPrePostProcessingOps](../../reference/pass.rst#_append_pre_post_processing) | Add Pre/Post nodes to the input model. |
-| [InsertBeamSearch](../../reference/pass.rst#_insert_beam_search) | Insert Beam Search Op. Only used for whisper models. Uses WhisperBeamSearch contrib op if ORT version >= 1.17.1, else uses BeamSearch contrib op. |
 | [ExtractAdapters](../../reference/pass.rst#_extract_adapters) | Extract adapters from ONNX model |
 | [CaptureSplitInfo](../../reference/pass.rst#_capture_split_info) | Capture the split information of the model layers. Only splits the transformer layers. |
 | [SplitModel](../../reference/pass.rst#_split_model) | Split an ONNX model into multiple smaller sub-models based on predefined assignments. |
@@ -416,8 +415,11 @@ Please also find the detailed options from following table for each pass:
 | [DoRA](../../reference/pass.rst#_dora) | Run DoRA fine-tuning on a Hugging Face PyTorch model. |
 | [LoftQ](../../reference/pass.rst#_loftq) | Run LoftQ fine-tuning on a Hugging Face PyTorch model. |
 | [QuantizationAwareTraining](../../reference/pass.rst#_onnx_quantization_aware_training) | Run quantization aware training on PyTorch model. |
-| [OpenVINOConversion](../../reference/pass.rst#_openvino_conversion) | Converts PyTorch, ONNX or TensorFlow Model to OpenVino Model. |
-| [OpenVINOQuantization](../../reference/pass.rst#_openvino_quantization) | Post-training quantization for OpenVINO model. |
+| [OpenVINOConversion](pass.rst#openvinoconversion) | Converts PyTorch, ONNX or TensorFlow Model to OpenVINO Model. |
+| [OpenVINOIoUpdate](pass.rst#openvinoioupdate) | Converts dynamic OpenVINO Model to static OpenVINO Model and updates IO names. |
+| [OpenVINOQuantization](pass.rst#openvinoquantization) | Post-training quantization for OpenVINO model. |
+| [OpenVINOEncapsulation](pass.rst#openvinoencapsulation) | Generates an ONNX model that encapsulates an OpenVINO IR model. |
+| [OpenVINOOptimumConversion](pass.rst#openvinooptimumconversion) | Run [optimum-cli export openvino](https://huggingface.co/docs/optimum/main/en/intel/openvino/export) command using Optimum Intel® to convert Huggingface Model to OpenVINO Model and optionally perform weight compression or quantization. |
 | [SNPEConversion](../../reference/pass.rst#_snpe_conversion) | Convert ONNX or TensorFlow model to SNPE DLC. Uses snpe-tensorflow-to-dlc or snpe-onnx-to-dlc tools from the SNPE SDK. |
 | [SNPEQuantization](../../reference/pass.rst#_snpe_quantization) | Quantize SNPE model. Uses snpe-dlc-quantize tool from the SNPE SDK. |
 | [SNPEtoONNXConversion](../../reference/pass.rst#_snpe_to_onnx_conversion) | Convert a SNPE DLC to ONNX to use with SNPE Execution Provider. Creates a ONNX graph with the SNPE DLC as a node. |
@@ -444,8 +446,8 @@ Please also find the detailed options from following table for each pass:
     },
     "onnx_quantization": {
         "type": "OnnxQuantization",
-        "data_config": "calib_data_coonfig",
-        "weight_type": "QUInt8"
+        "data_config": "calib_data_config",
+        "precision": "uint8"
     }
 }
 ```
