@@ -161,7 +161,7 @@
             "supported_providers": [ "CPUExecutionProvider", "CUDAExecutionProvider", "DmlExecutionProvider" ],
             "supported_accelerators": [ "cpu", "gpu" ],
             "supported_precisions": [ "int4" ],
-            "supported_algorithms": [ "rtn", "hqq" ],
+            "supported_algorithms": [ "rtn" ],
             "supported_quantization_encodings": [ "qdq" ]
         },
         "OnnxHqqQuantization": {
@@ -585,6 +585,22 @@
             "supported_algorithms": [  ],
             "supported_quantization_encodings": [  ],
             "extra_dependencies": [ "onnxscript" ]
+        },
+        "VitisAIAddMetaData": {
+            "module_path": "olive.passes.onnx.vitis_ai.meta_data.VitisAIAddMetaData",
+            "supported_providers": [ "CPUExecutionProvider" ],
+            "supported_accelerators": [ "cpu" ],
+            "supported_precisions": [ "*" ],
+            "supported_algorithms": [  ],
+            "supported_quantization_encodings": [  ]
+        },
+        "InputNCHWtoNHWC": {
+            "module_path": "olive.passes.onnx.vitis_ai.preprocess.InputNCHWtoNHWC",
+            "supported_providers": [ "CPUExecutionProvider" ],
+            "supported_accelerators": [ "cpu" ],
+            "supported_precisions": [ "*" ],
+            "supported_algorithms": [  ],
+            "supported_quantization_encodings": [  ]
         }
     },
     "extra_dependencies": {
