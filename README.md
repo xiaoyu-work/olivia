@@ -51,10 +51,8 @@ olivia finetune \
 
 The jsonl data file format is:
 ```json
-...
 {"desc": "what is your desc", "title": "lovely cat!!"}
 {"desc": "what is your desc", "title": "lovely dog!!"}
-...
 ```
 
  More fine-tune details can be found [here](https://microsoft.github.io/Olive/how-to/cli/cli-finetune.html)
