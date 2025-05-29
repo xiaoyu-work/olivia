@@ -8,5 +8,6 @@ __all__ = [
     "data_container",
     "dummy_data_container",
     "huggingface_container",
+    "local_jsonl_container",
     "raw_data_container",
 ]

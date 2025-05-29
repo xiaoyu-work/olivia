@@ -53,7 +53,14 @@ class HfMixin:
         """Get tokenizer for the model."""
         # don't provide loading args for tokenizer directly since it tries to serialize all kwargs
         # TODO(anyone): only provide relevant kwargs, no use case for now to provide kwargs
-        return get_tokenizer(self.model_path)
+        try:
+            return get_tokenizer(self.model_path)
+        except ValueError as e:
+            # Handle SentencePiece/Tiktoken conversion errors for certain models
+            logger.warning(
+                "Failed to load tokenizer with fast mode for %s: %s. Trying with use_fast=False.", self.model_path, e
+            )
+            return get_tokenizer(self.model_path, use_fast=False)
 
     def save_metadata(self, output_dir: str, exclude_load_keys: Optional[list[str]] = None, **kwargs) -> list[str]:
         """Save model metadata files to the output directory.
@@ -105,9 +112,19 @@ class HfMixin:
         # save tokenizer, skip if it already exists
         try:
             get_tokenizer(output_dir)
-        except OSError:
-            tokenizer_filepaths = save_tokenizer(self.get_hf_tokenizer(), output_dir, **kwargs)
-            saved_filepaths.extend([fp for fp in tokenizer_filepaths if Path(fp).exists()])
+        except (OSError, ValueError) as e:
+            # OSError: tokenizer not found in output_dir
+            # ValueError: conversion errors (e.g., SentencePiece/Tiktoken conversion failures)
+            logger.debug("Tokenizer not found or failed to load from %s: %s. Saving from source model.", output_dir, e)
+            try:
+                tokenizer_filepaths = save_tokenizer(self.get_hf_tokenizer(), output_dir, **kwargs)
+                saved_filepaths.extend([fp for fp in tokenizer_filepaths if Path(fp).exists()])
+            except Exception as save_error:
+                logger.warning(
+                    "Failed to save tokenizer for model %s: %s. The model conversion will continue without tokenizer metadata.",
+                    self.model_path,
+                    save_error,
+                )
 
         logger.debug("Save metadata files to %s: %s", output_dir, saved_filepaths)
 

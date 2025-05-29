@@ -1,18 +1,56 @@
-# olivia
+# 🌟 Olivia
 
-Modified from [Microsoft/Olive](https://github.com/microsoft/Olive) to be more user-friendly and accessible to a broader audience, not limited to data scientists and engineers.
+<div align="center">
 
+**A User-Friendly AI Model Optimization Toolkit**
 
-## New features:
-* Optimize onnx model by CLI:  
-  `olivia optimize-onnx-graph -m <input_model> -o <output_folder>`
-* Get HF model IO by CLI:  
-  `olivia io -m <hf_model_name> -t <task>`  
-  e.g. `olivia io -m microsoft/resnet-50 -t image-classification`
-  ```
-  model: microsoft/resnet-50 task: image-classification has IO config: {'input_names': ['pixel_values'], 'output_names': ['logits'], 'dynamic_axes': {'pixel_values': {0: 'batch_size', 1: 'num_channels', 2: 'height', 3: 'width'}, 'logits': {0: 'batch_size'}}, 'dynamic_shapes': {'pixel_values': {0: 'batch_size', 1: 'num_channels', 2: 'height', 3: 'width'}}, 'input_shapes': [[2, 3, 64, 64]]}
-  ```
-    
+*Modified from [Microsoft/Olive](https://github.com/microsoft/Olive) to be more accessible to everyone, not just data scientists and engineers.*
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.8+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Status: Active](https://img.shields.io/badge/Status-Active-green.svg)]()
+
+</div>
+
+---
+
+##  New Features
+
+### ✨ Optimize ONNX Models via CLI
+```bash
+olivia optimize-onnx-graph -m <input_model> -o <output_folder>
+```
+
+### ✨ Get HuggingFace Model I/O Configuration
+```bash
+olivia io -m <hf_model_name> -t <task>
+```
+
+**Example:**
+```bash
+olivia io -m microsoft/resnet-50 -t image-classification
+```
+
+**Output:**
+```bash
+model: microsoft/resnet-50 task: image-classification has IO config: {'input_names': ['pixel_values'], 'output_names': ['logits'], 'dynamic_axes': {'pixel_values': {0: 'batch_size', 1: 'num_channels', 2: 'height', 3: 'width'}, 'logits': {0: 'batch_size'}}, 'dynamic_shapes': {'pixel_values': {0: 'batch_size', 1: 'num_channels', 2: 'height', 3: 'width'}}, 'input_shapes': [[2, 3, 64, 64]]}
+```
+
+### ✨ Local JSONL Data Support for LoRA Fine-tuning
+```bash
+olivia finetune \
+  --model_name_or_path meta-llama/Llama-3.2-1B-Instruct \
+  --trust_remote_code \
+  --output_path models/llama/ft \
+  --data_files "lip.jsonl" \
+  --text_template "desc:{desc}\ntitle:{title}" \
+  --method lora \
+  --max_steps 500 \
+  --data_container LocalJsonlContainer
+``` 
+ More fine-tune details can be found [here](https://microsoft.github.io/Olive/how-to/cli/cli-finetune.html)
+
+---
 
 <div align="center">
   <picture>

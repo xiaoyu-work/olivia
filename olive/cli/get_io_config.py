@@ -25,9 +25,7 @@ class GetIoConfigCommand(BaseOliveCLICommand):
         dummy_inputs = model_handler.get_dummy_inputs()
 
         input_names = io_config["input_names"]
-        input_shapes = []
-        for input_name in input_names:
-            input_shapes.append(list(dummy_inputs[input_name].shape))
+        input_shapes = [list(dummy_inputs[input_name].shape) for input_name in input_names]
         io_config["input_shapes"] = input_shapes
 
         print(f"model: {self.args.m} task: {self.args.task} has IO config: {io_config}")

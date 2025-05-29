@@ -2,10 +2,9 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
 # --------------------------------------------------------------------------
+import subprocess
 from argparse import ArgumentParser
 from copy import deepcopy
-import subprocess
-from typing import Dict
 
 from olive.cli.base import (
     BaseOliveCLICommand,
@@ -47,7 +46,7 @@ class OptimizeOnnxGraphCommand(BaseOliveCLICommand):
         print(f"Installing packages: {cmd}")
         subprocess.check_call(cmd)
 
-    def _get_run_config(self, tempdir: str) -> Dict:
+    def _get_run_config(self, tempdir: str) -> dict:
         config = deepcopy(TEMPLATE)
 
         input_model_config = get_input_model_config(self.args)

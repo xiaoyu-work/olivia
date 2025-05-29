@@ -17,6 +17,8 @@ class DataContainer(BaseModel):
 
     # override the default components from config with baseclass or subclass
     default_components_type: ClassVar[dict] = DefaultDataComponentCombos
+    # task-specific component mappings
+    task_type_components_map: ClassVar[dict] = {}
     # avoid to directly create the instance of DataComponentConfig,
     # suggest to use config.to_data_container()
     config: DataConfig = None

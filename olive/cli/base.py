@@ -452,8 +452,15 @@ def add_dataset_options(sub_parser, required=True, include_train=True, include_e
         "-d",
         "--data_name",
         type=str,
-        required=required,
+        required=False,
         help="The dataset name.",
+    )
+
+    dataset_group.add_argument(
+        "--data_container",
+        type=str,
+        required=False,
+        help="The data container type.",
     )
 
     if include_train:
@@ -535,6 +542,7 @@ def update_dataset_options(args, config):
             (*load_key, "data_files"),
             args.data_files.split(",") if args.data_files else None,
         ),
+        ((*preprocess_key, "model_name"), args.model_name_or_path),
         ((*preprocess_key, "text_cols"), args.text_field),
         ((*preprocess_key, "text_template"), args.text_template),
         ((*preprocess_key, "chat_template"), args.use_chat_template),
@@ -544,6 +552,12 @@ def update_dataset_options(args, config):
         ((*preprocess_key, "max_samples"), args.max_samples),
         ((*dataloader_key, "batch_size"), args.batch_size),
     ]
+
+    if args.data_container:
+        to_replace.append(
+            (("data_configs", 0, "type"), args.data_container),
+        )
+
     for keys, value in to_replace:
         if value is not None:
             set_nested_dict_value(config, keys, value)

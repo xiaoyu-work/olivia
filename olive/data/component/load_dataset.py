@@ -20,6 +20,32 @@ def local_dataset(**kwargs):
 
 
 @Registry.register_dataset()
+def local_jsonl_dataset(
+    data_files: Union[str, Sequence[str]],
+    split: Optional[str] = None,
+    col_filters: Optional[Mapping[str, Union[str, int, float]]] = None,
+    **kwargs,
+):
+    """Create a dataset from local JSONL files."""
+    from datasets.utils.logging import disable_progress_bar, set_verbosity_error
+
+    disable_progress_bar()
+    set_verbosity_error()
+    from datasets import load_dataset
+
+    # Convert single file to list for consistency
+    if isinstance(data_files, str):
+        data_files = [data_files]
+
+    # Load dataset directly from files without requiring data_name
+    dataset = load_dataset("json", data_files=data_files, split=split, **kwargs)
+
+    if col_filters:
+        dataset = dataset.filter(lambda x: _filter_dataset(x, col_filters))
+    return dataset
+
+
+@Registry.register_dataset()
 def huggingface_dataset(
     data_name: str,
     subset: Optional[str] = None,
