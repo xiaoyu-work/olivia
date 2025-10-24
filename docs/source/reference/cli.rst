@@ -14,27 +14,16 @@ Run Olive workflow defined in the input .json configuration file.
     :prog: olive
     :path: run
 
-Finetune
+Optimize
 ========
 
-Fine-tune a model on a dataset using HuggingFace peft. Huggingface training arguments can be provided along with the defined options.
+Optimize input model (supports HuggingFace, ONNX, PyTorch, and Azure ML models).
 
 .. argparse::
     :module: olive.cli.launcher
     :func: get_cli_parser
     :prog: olive
-    :path: finetune
-
-Auto-Optimization
-=================
-
-Automatically optimize the input model for the given target and precision.
-
-.. argparse::
-    :module: olive.cli.launcher
-    :func: get_cli_parser
-    :prog: olive
-    :path: auto-opt
+    :path: optimize
 
 Quantization
 ============
@@ -57,6 +46,39 @@ Capture ONNX graph using PyTorch Exporter or Model Builder from the Huggingface 
     :func: get_cli_parser
     :prog: olive
     :path: capture-onnx-graph
+
+Run Pass
+========
+
+Run a single pass on the input model (supports HuggingFace, ONNX, PyTorch, and Azure ML models).
+
+.. argparse::
+    :module: olive.cli.launcher
+    :func: get_cli_parser
+    :prog: olive
+    :path: run-pass
+
+Finetune
+========
+
+Fine-tune a model on a dataset using HuggingFace peft. Huggingface training arguments can be provided along with the defined options.
+
+.. argparse::
+    :module: olive.cli.launcher
+    :func: get_cli_parser
+    :prog: olive
+    :path: finetune
+
+Auto-Optimization
+=================
+
+Automatically optimize the input model for the given target and precision.
+
+.. argparse::
+    :module: olive.cli.launcher
+    :func: get_cli_parser
+    :prog: olive
+    :path: auto-opt
 
 Generate Adapters
 ==================
@@ -104,8 +126,8 @@ Generate a cost model for a given model and save it as a csv file. This cost mod
     :path: generate-cost-model
 
 
-Qualcomm SDK
-============
+Configure Qualcomm SDK
+======================
 
 Configure Qualcomm SDK.
 
@@ -114,17 +136,6 @@ Configure Qualcomm SDK.
     :func: get_cli_parser
     :prog: olive
     :path: configure-qualcomm-sdk
-
-AzureML
-=======
-
-Manage the AzureML Compute resources.
-
-.. argparse::
-    :module: olive.cli.launcher
-    :func: get_cli_parser
-    :prog: olive
-    :path: manage-aml-compute
 
 Shared Cache
 =============

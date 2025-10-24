@@ -11,10 +11,15 @@ from typing import Optional, Union
 from packaging import version
 
 from olive.hardware.accelerator import AcceleratorSpec, Device
+from olive.hardware.constants import ExecutionProvider
 from olive.model import CompositeModelHandler, ONNXModelHandler
 from olive.model.utils import resolve_onnx_path
 from olive.passes import Pass
-from olive.passes.onnx.common import get_context_bin_file_names, process_llm_pipeline
+from olive.passes.onnx.common import (
+    get_context_bin_file_names,
+    process_llm_pipeline,
+    update_llm_pipeline_genai_config_gpu_ctxbin,
+)
 from olive.passes.pass_config import BasePassConfig, PassConfigParam
 
 logger = logging.getLogger(__name__)
@@ -70,10 +75,13 @@ class EPContextBinaryGenerator(Pass):
         output_model_path: str,
     ) -> Union[ONNXModelHandler, CompositeModelHandler]:
         from onnxruntime import __version__ as OrtVersion
+
+        # session created using providers argument so will use the ort.get_available_providers()
+        # TODO(jambayk): consider switching to the new EP API for Windows
         from onnxruntime import get_available_providers
 
         # TODO(jambayk): validate and support other NPU EPs
-        assert self.accelerator_spec.execution_provider == "QNNExecutionProvider", (
+        assert self.accelerator_spec.execution_provider == ExecutionProvider.QNNExecutionProvider, (
             "Only QNNExecutionProvider is supported for now."
         )
         assert self.accelerator_spec.execution_provider in get_available_providers(), (
@@ -135,7 +143,9 @@ class EPContextBinaryGenerator(Pass):
 
             group_session_options = config.session_options or {}
             provider_options = config.provider_options or {}
-            if self.accelerator_spec.execution_provider == "QNNExecutionProvider":
+            if (
+                version.parse(OrtVersion).release < version.parse("1.22.0").release
+            ) and self.accelerator_spec.execution_provider == ExecutionProvider.QNNExecutionProvider:
                 provider_options["backend_path"] = "QnnHtp.dll"
             group_session_options["provider_options"] = [
                 {self.accelerator_spec.execution_provider.lower().replace("executionprovider", ""): provider_options}
@@ -226,15 +236,19 @@ class EPContextBinaryGenerator(Pass):
         :return: ONNXModelHandler for the generated context binary.
         """
         import onnxruntime as ort
-
-        from olive.common.ort_inference import initialize_inference_session_options_for_winml, is_winml_installation
+        from onnxruntime import __version__ as OrtVersion
 
         # prepare provider options
         provider_options = provider_options or {}
-        if execution_provider == "QNNExecutionProvider":
-            provider_options["backend_path"] = "libQnnHtp.so" if platform.system() == "Linux" else "QnnHtp.dll"
-            if share_ep_contexts:
-                provider_options["enable_htp_weight_sharing"] = "1"
+        if execution_provider == ExecutionProvider.QNNExecutionProvider:
+            if str(device).lower() == "gpu":
+                provider_options["backend_path"] = "libQnnGpu.so" if platform.system() == "Linux" else "QnnGpu.dll"
+                update_llm_pipeline_genai_config_gpu_ctxbin(model_path)
+            else:
+                if version.parse(OrtVersion).release < version.parse("1.22.0").release:
+                    provider_options["backend_path"] = "libQnnHtp.so" if platform.system() == "Linux" else "QnnHtp.dll"
+                    if share_ep_contexts:
+                        provider_options["enable_htp_weight_sharing"] = "1"
 
         # prepare session options
         session_options = session_options or {}
@@ -264,16 +278,11 @@ class EPContextBinaryGenerator(Pass):
         sess_options.add_session_config_entry("ep.context_file_path", str(output_model_path))
 
         # create the inference session
+        # requires regular onnxruntime package, not winml (not tested with winml)
         logger.debug("Creating context binary for model %s", str(model_path))
-
-        sess_kwargs = {}
-        if is_winml_installation():
-            initialize_inference_session_options_for_winml(
-                sess_options, device, [execution_provider], [provider_options or {}]
-            )
-        else:
-            sess_kwargs.update({"providers": [execution_provider], "provider_options": [provider_options]})
-        ort.InferenceSession(model_path, sess_options=sess_options, **sess_kwargs)
+        ort.InferenceSession(
+            model_path, sess_options=sess_options, providers=[execution_provider], provider_options=[provider_options]
+        )
 
         assert output_model_path.exists(), f"Context binary not found at {output_model_path}"
 

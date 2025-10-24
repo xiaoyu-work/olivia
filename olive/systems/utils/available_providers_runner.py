@@ -21,6 +21,7 @@ def main(raw_args=None):
     args = get_args(raw_args)
 
     # get available execution providers
+    # python environment system doesn't use EP registration yet
     available_eps = ort.get_available_providers()
 
     # save to json

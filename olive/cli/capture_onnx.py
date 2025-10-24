@@ -5,22 +5,21 @@
 import argparse
 from argparse import ArgumentParser
 from copy import deepcopy
+from enum import IntEnum
 
 from olive.cli.base import (
     BaseOliveCLICommand,
     add_input_model_options,
     add_logging_options,
-    add_remote_options,
     add_save_config_file_options,
     add_shared_cache_options,
     get_input_model_config,
-    update_remote_options,
     update_shared_cache_options,
 )
-from olive.common.utils import IntEnumBase, set_nested_dict_value
+from olive.common.utils import set_nested_dict_value
 
 
-class ModelBuilderAccuracyLevel(IntEnumBase):
+class ModelBuilderAccuracyLevel(IntEnum):
     fp32 = 1
     fp16 = 2
     bf16 = 3
@@ -150,20 +149,24 @@ class CaptureOnnxGraphCommand(BaseOliveCLICommand):
                 "for the CUDA graph to be used correctly."
             ),
         )
+        mb_group.add_argument(
+            "--extra_mb_options",
+            type=str,
+            required=False,
+            help="Extra key-value pairs options to pass to the model builder. e.g., 'int4_is_symmetric=true,int4_op_types_to_quantize=MatMul/Gemm'.",
+        )
 
         sub_parser.add_argument(
             "--use_ort_genai", action="store_true", help="Use OnnxRuntime generate() API to run the model"
         )
 
-        # remote options
-        add_remote_options(sub_parser)
         add_logging_options(sub_parser)
         add_save_config_file_options(sub_parser)
         add_shared_cache_options(sub_parser)
         sub_parser.set_defaults(func=CaptureOnnxGraphCommand)
 
     def run(self):
-        self._run_workflow()
+        return self._run_workflow()
 
     def _get_run_config(self, tempdir: str) -> dict:
         config = deepcopy(TEMPLATE)
@@ -198,6 +201,13 @@ class CaptureOnnxGraphCommand(BaseOliveCLICommand):
                     (("passes", "m", "enable_cuda_graph"), self.args.enable_cuda_graph),
                 ]
             )
+            if self.args.extra_mb_options:
+                to_replace.append(
+                    (
+                        ("passes", "m", "extra_options"),
+                        BaseOliveCLICommand._parse_extra_options(self.args.extra_mb_options.split(",")),
+                    )
+                )
             if self.args.int4_block_size is not None:
                 to_replace.append((("passes", "m", "int4_block_size"), self.args.int4_block_size))
             if self.args.int4_accuracy_level is not None:
@@ -235,7 +245,6 @@ class CaptureOnnxGraphCommand(BaseOliveCLICommand):
             if value is None:
                 continue
             set_nested_dict_value(config, keys, value)
-        update_remote_options(config, self.args, "capture-onnx-graph", tempdir)
         update_shared_cache_options(config, self.args)
 
         return config

@@ -17,8 +17,6 @@ to apply from user in the form of a json dictionary. In this document, we docume
 The options are organized into following sections:
 
 - [Workflow id](#workflow-id) `workflow_id`
-- [Workflow Host](#workflow-host) `workflow_host`
-- [Azure ML client](#azure-ml-client) `azureml_client`
 - [Input Model Information](#input-model-information) `input_model`
 - [Systems Information](#systems-information) `systems`
 - [Evaluators Information](#evaluators-information) `evaluators`
@@ -29,81 +27,6 @@ The options are organized into following sections:
 
 You can name the workflow run by specifying `workflow_id` section in your config file. Olive will save the cache under `<cache_dir>/<workflow_id>` folder, and automatically save the current running config in the cache folder.
 
-## Workflow Host
-
-Workflow host is where the Olive workflow will be run. The default value is `None`. If `None` set for workflow host, Olive will run workflow locally. It supports `AzureML` system for now.
-
-## Azure ML Client
-
-If you will use Azure ML resources and assets, you need to provide your Azure ML client configurations. For example:
-
-- You have AzureML system for targets or hosts.
-- You have Azure ML model as input model.
-
-AzureML authentication credentials is needed. Refer to
-[this](https://learn.microsoft.com/en-us/azure/machine-learning/how-to-setup-authentication?tabs=sdk)  for
-more details.
-
-`azureml_client: [Dict]`
-
-- `subscription_id: [str]` Azure account subscription id.
-- `resource_group: [str]` Azure account resource group name.
-- `workspace_name: [str]` Azure ML workspace name.
-- `aml_config_path: [str]` The path to Azure config file, if Azure ML client config is in a separate file.
-- `read_timeout: [int]` read timeout in seconds for HTTP requests, user can increase if they find the default value too small. The default value from azureml sdk is 3000 which is too large and cause the evaluations and pass runs to sometimes hang for a long time between retries of job stream and download steps.
-- `max_operation_retries: [int]` The maximum number of retries for Azure ML operations like resource creation and download.
-The default value is 3. User can increase if there are network issues and the operations fail.
-- `operation_retry_interval: [int]` The initial interval in seconds between retries for Azure ML operations like resource creation and download. The interval doubles after each retry. The default value is 5. User can increase if there are network issues and the operations fail.
-- `default_auth_params: Dict[str, Any]` Default auth parameters for AzureML client. Please refer to [azure DefaultAzureCredential](https://learn.microsoft.com/en-us/python/api/azure-identity/azure.identity.defaultazurecredential?view=azure-python#parameters) for more details. For example, if you want to exclude managed identity credential, you can set the following:
-
-    ```json
-    "azureml_client": {
-        // ...
-        "default_auth_params": {
-            "exclude_managed_identity_credential": true
-        }
-    }
-    ```
-
-- `keyvault_name: [str]` The keyvault name to retrieve secrets.
-
-### Example
-
-#### `azureml_client` with `aml_config_path`:
-
-##### `aml_config.json`:
-
-```json
-{
-    "subscription_id": "<subscription_id>",
-    "resource_group": "<resource_group>",
-    "workspace_name": "<workspace_name>",
-}
-```
-
-##### `azureml_client`:
-
-```json
-"azureml_client": {
-    "aml_config_path": "aml_config.json",
-    "read_timeout" : 4000,
-    "max_operation_retries" : 4,
-    "operation_retry_interval" : 5
-},
-```
-
-#### `azureml_client` with azureml config fields:
-
-```json
-"azureml_client": {
-    "subscription_id": "<subscription_id>",
-    "resource_group": "<resource_group>",
-    "workspace_name": "<workspace_name>",
-    "read_timeout" : 4000,
-    "max_operation_retries" : 4,
-    "operation_retry_interval" : 5
-},
-```
 
 <!-- TODO(anyone): Docs for all model handlers-->
 ## Input Model Information
@@ -112,7 +35,7 @@ The default value is 3. User can increase if there are network issues and the op
 
 User should specify input model type and configuration using `input model` dictionary. It contains following items:
 
-- `type: [str]` Type of the input model which is case insensitive.. The supported types contain `HfModelHandler`, `PyTorchModelHandler`, `ONNXModelHandler`, `OpenVINOModelHandler`,`SNPEModelHandler` and etc.
+- `type: [str]` Type of the input model which is case insensitive.. The supported types contain `HfModelHandler`, `PyTorchModelHandler`, `ONNXModelHandler`, `OpenVINOModelHandler` and etc.
 
 - `config: [Dict]` The configuration of the pass. Its fields can be provided directly to the parent dictionary. For example, for `HfModelHandler`, the input model config dictionary specifies following items:
 
@@ -175,7 +98,6 @@ Please find the detailed list for each model type:
 | DistributedOnnxModelHandler | ONNX model |
 | QNNModelHandler | QNN model |
 | OpenVINOModelHandler | OpenVINO IR model |
-| SNPEModelHandler | SNPE DLC model |
 | TensorFlowModelHandler | TensorFlow model |
 | CompositeModelHandler | Composite Model |
 
@@ -196,12 +118,11 @@ This is a dictionary that contains the information of systems that are reference
 dictionary is the name of the system. The value of the dictionary is another dictionary that contains the information of the system. The
 information of the system contains following items:
 
-- `type: [str]` The type of the system. The supported types are `LocalSystem`, `AzureML` and `Docker`.
-  There are some built-in system alias which could also be used as type. For example, `AzureNDV2System`. Please refer to [System alias list](../how-to/configure-workflows/systems.md#azureml-readymade-systems) for the complete list of system alias.
+- `type: [str]` The type of the system. The supported types are `LocalSystem`, `PythonEnvironment`, and `Docker`.
 
 - `config: [Dict]` The system config dictionary that contains the system specific information. The fields can be provided directly under the parent dictionary.
  - `accelerators: [List[str]]` The accelerators that will be used for this workflow.
- - `hf_token: [bool]` Whether to use a Huggingface token to access Huggingface resources. If it is set to `True`, For local system, Docker system, and PythonEnvironment system, Olive will retrieve the token from the `HF_TOKEN` environment variable or from the token file located at `~/.huggingface/token`. For AzureML system, Olive will retrieve the token from user keyvault secret. If set to `False`, no token will be utilized during this workflow run. The default value is `False`.
+ - `hf_token: [bool]` Whether to use a Huggingface token to access Huggingface resources. If it is set to `True`, For local system, Docker system, and PythonEnvironment system, Olive will retrieve the token from the `HF_TOKEN` environment variable or from the token file located at `~/.huggingface/token`. If set to `False`, no token will be utilized during this workflow run. The default value is `False`.
 
 Please refer to [How To Configure System](../how-to/configure-workflows/systems.md) for the more information of the system config dictionary.
 
@@ -209,15 +130,7 @@ Please refer to [How To Configure System](../how-to/configure-workflows/systems.
 
 ```json
 "systems": {
-    "local_system": {"type": "LocalSystem"},
-    "aml_system": {
-        "type": "AzureML",
-        "aml_compute": "cpu-cluster",
-        "aml_docker_config": {
-            "base_image": "mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04",
-            "conda_file_path": "conda.yaml"
-        }
-    }
+    "local_system": {"type": "LocalSystem"}
 }
 ```
 
@@ -284,18 +197,8 @@ information of the evaluator contains following items:
         - `metric_func_kwargs: Dict[str, Any]` Keyword arguments for `metric_func` provided by the user. The functions must be able to take the keyword arguments either through the function signature
         as keyword/positional parameters after the required positional parameters or through `**kwargs`.
 
-    Note that for above `data_dir` config which is related to resource path, Olive supports local file, local folder or AML Datastore. Take AML Datastore as an example, Olive can parse the resource type automatically from `config dict`, or `url`. Please refer to our [Resnet](https://github.com/microsoft/Olive/tree/main/examples/resnet#resnet-optimization-with-ptq-on-cpu) example for more details.
+    Note that for above `data_dir` config which is related to resource path, Olive supports local file and local folder.
 
-    ```json
-    "data_dir": {
-        "type": "azureml_datastore",
-        "azureml_client": "azureml_client",
-        "datastore_name": "test",
-        "relative_path": "cifar-10-batches-py"
-    }
-    // provide azureml datastore url
-    "data_dir": "azureml://subscriptions/test/resourcegroups/test/workspaces/test/datastores/test/cifar-10-batches-py"
-    ```
 
 ### Example
 
@@ -397,7 +300,7 @@ Please also find the detailed options from following table for each pass:
 | [OnnxDynamicQuantization](pass.rst#onnxdynamicquantization) | ONNX Dynamic Quantization Pass. |
 | [OnnxStaticQuantization](pass.rst#onnxstaticquantization) | ONNX Static Quantization Pass. |
 | [OnnxQuantization](pass.rst#onnxquantization) | Quantize ONNX model with onnxruntime where we can search for best parameters for static/dynamic quantization at same time. |
-| [OnnxMatMul4Quantizer](pass.rst#onnxmatmul4quantizer) | Quantize ONNX models' MatMul operations to 4-bit weights |
+| [OnnxBlockWiseRtnQuantization](pass.rst#onnxblockwisertnquantization) | Quantize ONNX models' MatMul and Gather operations to 4-bit or 8-bit weights by RTN algorithm. |
 | [OnnxHqqQuantization](pass.rst#onnxhqqquantization) | Quantize ONNX models' MatMul operations to 4-bit weights by HQQ algorithm. |
 | [GraphSurgeries](pass.rst#graphsurgeries) | ONNX graph surgeries collections. |
 | [MatMulNBitsToQDQ](pass.rst#matmulnbitstoqdq) | Convert ONNX MatMulNBits nodes to standard ONNX quantized-dequantized (QDQ) format. |
@@ -405,10 +308,9 @@ Please also find the detailed options from following table for each pass:
 | [IncDynamicQuantization](pass.rst#incdynamicquantization) |  Intel® Neural Compressor Dynamic Quantization Pass. |
 | [IncStaticQuantization](pass.rst#incstaticquantization) |  Intel® Neural Compressor Static Quantization Pass. |
 | [IncQuantization](pass.rst#incquantization) | Quantize ONNX model with Intel® Neural Compressor where we can search for best parameters for static/dynamic quantization at same time. |
-| [VitisAIQuantization](pass.rst#vitisaiquantization) | AMD-Xilinx Vitis-AI Quantization Pass. |
-| [AppendPrePostProcessingOps](pass.rst#appendprepostprocessing) | Add Pre/Post nodes to the input model. |
 | [ExtractAdapters](pass.rst#extractadapters) | Extract adapters from ONNX model |
 | [CaptureSplitInfo](pass.rst#capturesplitinfo) | Capture the split information of the model layers. Only splits the transformer layers. |
+| [SelectiveMixedPrecision](pass.rst#selectivemixedprecision) | Annotate the model with mixed precision information. |
 | [SplitModel](pass.rst#splitmodel) | Split an ONNX model into multiple smaller sub-models based on predefined assignments. |
 | [LoRA](pass.rst#lora) | Run LoRA fine-tuning on a Hugging Face PyTorch model. |
 | [LoHa](pass.rst#loha) | Run LoHa fine-tuning on a Hugging Face PyTorch model. |
@@ -416,15 +318,13 @@ Please also find the detailed options from following table for each pass:
 | [QLoRA](pass.rst#qlora) | Run QLoRA fine-tuning on a Hugging Face PyTorch model. |
 | [DoRA](pass.rst#dora) | Run DoRA fine-tuning on a Hugging Face PyTorch model. |
 | [LoftQ](pass.rst#loftq) | Run LoftQ fine-tuning on a Hugging Face PyTorch model. |
-| [QuantizationAwareTraining](pass.rst#onnxquantizationawaretraining) | Run quantization aware training on PyTorch model. |
 | [OpenVINOConversion](pass.rst#openvinoconversion) | Converts PyTorch, ONNX or TensorFlow Model to OpenVINO Model. |
 | [OpenVINOIoUpdate](pass.rst#openvinoioupdate) | Converts dynamic OpenVINO Model to static OpenVINO Model and updates IO names. |
-| [OpenVINOQuantization](pass.rst#openvinoquantization) | Post-training quantization for OpenVINO model. |
+| [OpenVINOQuantization](pass.rst#openvinoquantization) | Post-training quantization for OpenVINO models and ONNX models using Intel® NNCF |
+| [OpenVINOQuantizationWithAccuracy](pass.rst#openvinoquantizationwithaccuracy) | Post-training quantization with accuracy for OpenVINO models and ONNX models using Intel® NNCF |
+| [OpenVINOWeightCompression](pass.rst#openvinoweightcompression) | Weight Compression to compress Huggingface to OpenVINO model and Huggingface to ONNX model as well as ONNX to ONNX model using Intel® NNCF |
 | [OpenVINOEncapsulation](pass.rst#openvinoencapsulation) | Generates an ONNX model that encapsulates an OpenVINO IR model. |
 | [OpenVINOOptimumConversion](pass.rst#openvinooptimumconversion) | Run [optimum-cli export openvino](https://huggingface.co/docs/optimum/main/en/intel/openvino/export) command using Optimum Intel® to convert Huggingface Model to OpenVINO Model and optionally perform weight compression or quantization. |
-| [SNPEConversion](pass.rst#snpeconversion) | Convert ONNX or TensorFlow model to SNPE DLC. Uses snpe-tensorflow-to-dlc or snpe-onnx-to-dlc tools from the SNPE SDK. |
-| [SNPEQuantization](pass.rst#snpequantization) | Quantize SNPE model. Uses snpe-dlc-quantize tool from the SNPE SDK. |
-| [SNPEtoONNXConversion](pass.rst#snpetoonnxconversion) | Convert a SNPE DLC to ONNX to use with SNPE Execution Provider. Creates a ONNX graph with the SNPE DLC as a node. |
 | [QNNConversion](pass.rst#qnnconversion) | Convert ONNX, TensorFlow, or PyTorch model to QNN C++ model. Quantize the model if –input_list is provided as extra_args. Uses qnn-[framework]-converter tool from the QNN SDK. |
 | [QNNModelLibGenerator](pass.rst#qnnmodellibgenerator) |  |
 | [QNNContextBinaryGenerator](pass.rst#qnncontextbinarygenerator) | Compile QNN C++ model source code into QNN model library for a specific target. Uses qnn-model-lib-generator tool from the QNN SDK. |
@@ -432,6 +332,7 @@ Please also find the detailed options from following table for each pass:
 | [SparseGPT](pass.rst#sparsegpt) | Run SparseGPT on a Hugging Face PyTorch model.  |
 | [SliceGPT](pass.rst#slicegpt) | Run SliceGPT on a Hugging Face PyTorch model. |
 | [QuaRot](pass.rst#quarot) | Rotate model using QuaRot. |
+| [Gptq](pass.rst#gptq) | Run GPTQ quantization on a Hugging Face PyTorch model. |
 | [GptqQuantizer](pass.rst#gptqquantizer) | GPTQ quantization Pass On Pytorch Model. |
 | [AutoAWQQuantizer](pass.rst#awqquantizer) | AWQ quantization Pass On Pytorch Model. |
 | [TorchTRTConversion](pass.rst#torchtrtconversion) | Convert torch.nn.Linear modules in the transformer layers of a HuggingFace PyTorch model to TensorRT modules. |

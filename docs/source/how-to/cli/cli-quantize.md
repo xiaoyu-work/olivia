@@ -1,4 +1,4 @@
-# Quantize
+# How To Use `quantize` Command
 
 Quantization refers to techniques for performing computations and storing tensors at lower bitwidths than floating point precision. A quantized model executes some or all of the operations on tensors with reduced precision rather than full precision (floating point) values. This allows for a more compact model representation and the use of high performance vectorized operations on many hardware platforms.
 
@@ -105,3 +105,5 @@ Once the automatic optimizer has successfully completed, you'll have:
 
 1. The base model in an optimized ONNX format.
 2. The adapter weights in a format for ONNX Runtime.
+
+Find more details about how to configure data [here](../configure-workflows/how-to-configure-data.md).

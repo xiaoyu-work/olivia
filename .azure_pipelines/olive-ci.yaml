@@ -5,24 +5,10 @@ trigger:
   paths:
     exclude:
     - docs/*
-    - examples/README.md
-    - examples/**/README.md
     - README.md
     - CONTRIBUTING.md
     - LICENSE
     - .github/*
-    # commonly updated examples with no test
-    - examples/deepseek/*
-    - examples/directml/llm/*
-    - examples/directml/stable_diffusion_xl/*
-    - examples/llama2/*
-    - examples/llama3/*
-    - examples/mistral/*
-    - examples/open_llama/*
-    - examples/phi2/*
-    - examples/phi3/*
-    - examples/phi3_5/*
-    - examples/qwen2_5/*
 pr:
   branches:
     include:
@@ -30,28 +16,11 @@ pr:
   paths:
     exclude:
     - docs/*
-    - examples/README.md
-    - examples/**/README.md
     - README.md
     - CONTRIBUTING.md
     - LICENSE
     # unrelated pipelines
     - .github/*
-    - .azure_pipelines/performance_check/*
-    - .azure_pipelines/performance.yaml
-    - .azure_pipelines/job_templates/olive-performance-template.yaml
-    # commonly updated examples with no test
-    - examples/deepseek/*
-    - examples/directml/llm/*
-    - examples/directml/stable_diffusion_xl/*
-    - examples/llama2/*
-    - examples/llama3/*
-    - examples/mistral/*
-    - examples/open_llama/*
-    - examples/phi2/*
-    - examples/phi3/*
-    - examples/phi3_5/*
-    - examples/qwen2_5/*
 
 variables:
   runCodesignValidationInjection: false
@@ -63,102 +32,15 @@ jobs:
   parameters:
     name: Linux_CPU_CI_Unit_Test
     pool: $(OLIVE_POOL_UBUNTU2004)
-    test_type: 'unit_test'
 
 - template: job_templates/olive-test-linux-gpu-template.yaml
   parameters:
     name: Linux_GPU_CI_Unit_Test
     pool: $(OLIVE_POOL_UBUNTU2004_GPU_V100)
-    test_type: 'unit_test'
 
 # Windows unit tests
 - template: job_templates/olive-test-cpu-template.yaml
   parameters:
     name: Windows_CPU_CI_Unit_Test
     pool: $(OLIVE_POOL_WIN2019)
-    test_type: 'unit_test'
     windows: True
-
-# Linux examples test
-- template: job_templates/olive-example-linux-template.yaml
-  parameters:
-    name: Linux_CI
-    pool: $(OLIVE_POOL_UBUNTU2004)
-    onnxruntime: onnxruntime
-    examples:
-      bert_ptq_cpu:
-        exampleFolder: bert
-        exampleName: bert_ptq_cpu
-      resnet_ptq_cpu:
-        exampleFolder: resnet
-        exampleName: resnet_ptq_cpu
-      mobilenet_qnn_ep:
-        exampleFolder: mobilenet/qnn
-        exampleName: mobilenet_qnn_ep
-
-# Windows examples test
-- template: job_templates/olive-example-win-template.yaml
-  parameters:
-    name: Windows_CI
-    pool: $(OLIVE_POOL_WIN2019)
-    examples:
-      bert_ptq_cpu:
-        exampleFolder: bert
-        exampleName: bert_ptq_cpu
-      resnet_ptq_cpu:
-        exampleFolder: resnet
-        exampleName: resnet_ptq_cpu
-      mobilenet_qnn_ep:
-        exampleFolder: mobilenet/qnn
-        exampleName: mobilenet_qnn_ep
-
-# Linux GPU examples testing.
-- template: job_templates/olive-example-linux-template.yaml
-  parameters:
-    name: Linux_GPU_CI
-    pool: $(OLIVE_POOL_UBUNTU2004_GPU_V100)
-    device: 'gpu'
-    onnxruntime: onnxruntime-gpu
-    dockerfile: '.azure_pipelines/dockerfiles/linux-gpu.dockerfile'
-    base_image: 'mcr.microsoft.com/mirror/nvcr/nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04'
-    trt_version: '10.5.0.18-1+cuda12.6'
-    examples:
-      bert_cuda_gpu:
-        exampleFolder: bert
-        exampleName: bert_cuda_gpu
-      stable_diffusion_cuda_gpu:
-        exampleFolder: stable_diffusion
-        exampleName: stable_diffusion_cuda_gpu
-        exampleRequirements: requirements-common.txt
-
-# these jobs need secrets not available in forks
-- ${{ if ne(variables['System.PullRequest.IsFork'], 'True') }}:
-  # integration tests
-  - template: job_templates/olive-test-cpu-template.yaml
-    parameters:
-      name: Linux_CPU_CI_Integration_Test
-      pool: $(OLIVE_POOL_UBUNTU2004)
-      test_type: 'integ_test'
-
-  # Re-enable this when the cluster is ready
-  # - template: job_templates/olive-test-cpu-template.yaml
-  #   parameters:
-  #     name: Windows_CPU_CI_Integration_Test
-  #     pool: $(OLIVE_POOL_WIN2019)
-  #     test_type: 'integ_test'
-  #     windows: True
-
-  # Multiple EP Linux testing
-  - template: job_templates/olive-test-cpu-template.yaml
-    parameters:
-      name: Linux_CI_Multiple_EP_Test
-      pool: $(OLIVE_POOL_UBUNTU2004)
-      test_type: 'multiple_ep'
-
-# build documents
-- template: job_templates/olive-build-doc-template.yaml
-  parameters:
-    job_name: Test_BuildDocs
-    display_name: Test Build Docs
-    pool: $(OLIVE_POOL_UBUNTU2004)
-    publish_docs: false

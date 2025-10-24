@@ -4,17 +4,14 @@
 # --------------------------------------------------------------------------
 import json
 import re
-import subprocess
 from abc import ABC, abstractmethod
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
-from typing import ClassVar, Optional, Union
+from typing import ClassVar, Optional
 
-import yaml
-
-from olive.cli.constants import CONDA_CONFIG
+from olive.common.constants import DEFAULT_HF_TASK
 from olive.common.user_module_loader import UserModuleLoader
-from olive.common.utils import hash_dict, hf_repo_exists, set_nested_dict_value, unescaped_str
+from olive.common.utils import hf_repo_exists, set_nested_dict_value, unescaped_str
 from olive.hardware.accelerator import AcceleratorSpec
 from olive.hardware.constants import DEVICE_TO_EXECUTION_PROVIDERS
 from olive.resource_path import OLIVE_RESOURCE_ANNOTATIONS
@@ -35,16 +32,36 @@ class BaseOliveCLICommand(ABC):
 
         from olive.workflows import run as olive_run
 
+        Path(self.args.output_path).mkdir(parents=True, exist_ok=True)
+
         with tempfile.TemporaryDirectory(prefix="olive-cli-tmp-", dir=self.args.output_path) as tempdir:
             run_config = self._get_run_config(tempdir)
-            if self.args.save_config_file:
+            if self.args.save_config_file or self.args.dry_run:
                 self._save_config_file(run_config)
+            if self.args.dry_run:
+                print("Dry run mode enabled. Configuration file is generated but no optimization is performed.")
+                return None
             workflow_output = olive_run(run_config)
             if not workflow_output.has_output_model():
                 print("No output model produced. Please check the log for details.")
             else:
                 print(f"Model is saved at {self.args.output_path}")
             return workflow_output
+
+    @staticmethod
+    def _parse_extra_options(kv_items):
+        from onnxruntime_genai import __version__ as OrtGenaiVersion
+        from packaging import version
+
+        if version.parse(OrtGenaiVersion) <= version.parse("0.9.0"):
+            raise ValueError(
+                "onnxruntime-genai version <= 0.9.0 is not supported for extra_options in CLI. "
+                "Please either upgrade to onnxruntime-genai version > 0.9.0 or use the model builder pass directly in the config file."
+            )
+
+        from onnxruntime_genai.models.builder import parse_extra_options
+
+        return parse_extra_options(kv_items)
 
     @staticmethod
     def _save_config_file(config: dict):
@@ -74,7 +91,6 @@ def _get_hf_input_model(args: Namespace, model_path: OLIVE_RESOURCE_ANNOTATIONS)
     input_model = {
         "type": "HfModel",
         "model_path": model_path,
-        "generative": args.is_generative_model,
         "load_kwargs": {
             "attn_implementation": "eager",
         },
@@ -138,7 +154,6 @@ def _get_pt_input_model(args: Namespace, model_path: OLIVE_RESOURCE_ANNOTATIONS)
     input_model_config = {
         "type": "PyTorchModel",
         "model_script": args.model_script,
-        "generative": args.is_generative_model,
     }
 
     if args.script_dir:
@@ -166,18 +181,17 @@ def _get_pt_input_model(args: Namespace, model_path: OLIVE_RESOURCE_ANNOTATIONS)
     return input_model_config
 
 
-def get_input_model_config(args: Namespace) -> dict:
+def get_input_model_config(args: Namespace, required: bool = True) -> Optional[dict]:
     """Parse the model_name_or_path and return the input model config.
 
     Check model_name_or_path formats in order:
     1. Local PyTorch model with model loader but no model path
     2. Output of a previous command
-    3. azureml:<model_name>:<version> (only for PyTorch model)
-    4. Load PyTorch model with model_script
-    5. azureml://registries/<registry_name>/models/<model_name>/versions/<version> (only for HF model)
-    6. https://huggingface.co/<model_name> (only for HF model)
-    7. HF model name string
-    8. local file path
+    3. Load PyTorch model with model_script
+    4. azureml://registries/<registry_name>/models/<model_name>/versions/<version> (only for HF model)
+    5. https://huggingface.co/<model_name> (only for HF model)
+    6. HF model name string
+    7. local file path
       a. local onnx model file path (either a user-provided model or a model produced by the Olive CLI)
       b. local HF model file path (either a user-provided model or a model produced by the Olive CLI)
     """
@@ -185,9 +199,17 @@ def get_input_model_config(args: Namespace) -> dict:
 
     if model_name_or_path is None:
         if hasattr(args, "model_script"):
-            # pytorch model with model_script, model_path is optional
-            print("model_name_or_path is not provided. Using model_script to load the model.")
-            return _get_pt_input_model(args, None)
+            if args.model_script:
+                # pytorch model with model_script, model_path is optional
+                print("model_name_or_path is not provided. Using model_script to load the model.")
+                return _get_pt_input_model(args, None)
+            elif required:
+                raise ValueError(
+                    "model_name_or_path is required. Either model_name_or_path or model_script is required."
+                )
+        if not required:
+            # optional model_name_or_path, return empty config
+            return None
         raise ValueError("model_name_or_path is required.")
 
     model_path = Path(model_name_or_path)
@@ -202,19 +224,6 @@ def get_input_model_config(args: Namespace) -> dict:
 
         print(f"Loaded previous command output of type {model_config['type']} from {model_name_or_path}")
         return model_config
-
-    # Check AzureML model
-    pattern = r"^azureml:(?P<model_name>[^:]+):(?P<version>[^:]+)$"
-    match = re.match(pattern, model_name_or_path)
-    if match:
-        return _get_pt_input_model(
-            args,
-            {
-                "type": "azureml_model",
-                "name": match.group("model_name"),
-                "version": match.group("version"),
-            },
-        )
 
     if getattr(args, "model_script", None):
         return _get_pt_input_model(args, model_name_or_path)
@@ -259,13 +268,13 @@ def update_input_model_options(args, config):
     config["input_model"] = get_input_model_config(args)
 
 
-def add_logging_options(sub_parser: ArgumentParser):
+def add_logging_options(sub_parser: ArgumentParser, default: int = 3):
     """Add logging options to the sub_parser."""
     sub_parser.add_argument(
         "--log_level",
         type=int,
-        default=3,
-        help="Logging level. Default is 3. level 0: DEBUG, 1: INFO, 2: WARNING, 3: ERROR, 4: CRITICAL",
+        default=default,
+        help=f"Logging level. Default is {default}. level 0: DEBUG, 1: INFO, 2: WARNING, 3: ERROR, 4: CRITICAL",
     )
     return sub_parser
 
@@ -277,42 +286,14 @@ def add_save_config_file_options(sub_parser: ArgumentParser):
         action="store_true",
         help="Generate and save the config file for the command.",
     )
+
+    sub_parser.add_argument(
+        "--dry_run",
+        action="store_true",
+        help="Enable dry run mode. This will not perform any actual optimization but will validate the configuration.",
+    )
+
     return sub_parser
-
-
-def add_remote_options(sub_parser: ArgumentParser):
-    """Add remote options to the sub_parser."""
-    remote_group = sub_parser
-    remote_group.add_argument(
-        "--resource_group",
-        type=str,
-        required=False,
-        help="Resource group for the AzureML workspace to run the workflow remotely.",
-    )
-    remote_group.add_argument(
-        "--workspace_name",
-        type=str,
-        required=False,
-        help="Workspace name for the AzureML workspace to run the workflow remotely.",
-    )
-    remote_group.add_argument(
-        "--keyvault_name",
-        type=str,
-        required=False,
-        help=(
-            "The azureml keyvault name with huggingface token to use for remote run. Refer to "
-            "https://microsoft.github.io/Olive/features/huggingface-integration.html#huggingface-login"
-            " for more details."
-        ),
-    )
-    remote_group.add_argument(
-        "--aml_compute",
-        type=str,
-        required=False,
-        help="The compute name to run the workflow on.",
-    )
-
-    return remote_group
 
 
 def add_input_model_options(
@@ -323,6 +304,7 @@ def add_input_model_options(
     enable_onnx: bool = False,
     default_output_path: Optional[str] = None,
     directory_output: bool = True,
+    required: bool = True,
 ):
     """Add model options to the sub_parser.
 
@@ -339,7 +321,7 @@ def add_input_model_options(
         "--model_name_or_path",
         type=str,
         # only pytorch model doesn't require model_name_or_path
-        required=not enable_pt,
+        required=required and not enable_pt,
         help=(
             "Path to the input model. "
             "See https://microsoft.github.io/Olive/reference/cli.html#providing-input-models "
@@ -347,7 +329,12 @@ def add_input_model_options(
         ),
     )
     if enable_hf:
-        model_group.add_argument("-t", "--task", type=str, help="Task for which the huggingface model is used.")
+        model_group.add_argument(
+            "-t",
+            "--task",
+            type=str,
+            help=f"Task for which the huggingface model is used. Default task is {DEFAULT_HF_TASK}.",
+        )
         model_group.add_argument(
             "--trust_remote_code", action="store_true", help="Trust remote code when loading a huggingface model."
         )
@@ -371,16 +358,15 @@ def add_input_model_options(
             type=str,
             help=(
                 "The directory containing the local PyTorch model script file."
-                "See https://microsoft.github.io/Olive/reference/cli.html#model-script-file-information "
+                " See https://microsoft.github.io/Olive/reference/cli.html#model-script-file-information "
                 "for more information."
             ),
         )
-    model_group.add_argument("--is_generative_model", type=bool, default=True, help="Is this a generative model?")
     model_group.add_argument(
         "-o",
         "--output_path",
         type=output_path_type if directory_output else str,
-        required=default_output_path is None,
+        required=required and default_output_path is None,
         default=default_output_path,
         help="Path to save the command output.",
     )
@@ -396,54 +382,6 @@ def output_path_type(path: str) -> str:
 
     path.mkdir(parents=True, exist_ok=True)
     return str(path)
-
-
-def is_remote_run(args: Namespace) -> bool:
-    """Check if the run is a remote run."""
-    return all([args.resource_group, args.workspace_name, args.aml_compute])
-
-
-def update_remote_options(config: dict, args: Namespace, cli_action: str, tempdir: Union[str, Path]):
-    """Update the config for remote run."""
-    if args.resource_group or args.workspace_name or args.aml_compute:
-        if not is_remote_run(args):
-            raise ValueError("resource_group, workspace_name and aml_compute are required for remote workflow run.")
-
-        config["workflow_id"] = f"{cli_action}-{hash_dict(config)}"
-
-        try:
-            subscription_id = json.loads(subprocess.check_output("az account show", shell=True).decode("utf-8"))["id"]
-            print(f"Using Azure subscription ID: {subscription_id}")
-
-        except subprocess.CalledProcessError:
-            print(
-                "Error: Unable to retrieve account information. "
-                "Make sure you are logged in to Azure CLI with command `az login`."
-            )
-
-        config["azureml_client"] = {
-            "subscription_id": subscription_id,
-            "resource_group": args.resource_group,
-            "workspace_name": args.workspace_name,
-            "keyvault_name": args.keyvault_name,
-            "default_auth_params": {"exclude_managed_identity_credential": True},
-        }
-
-        conda_file_path = Path(tempdir) / "conda_gpu.yaml"
-        with open(conda_file_path, "w") as f:
-            yaml.dump(CONDA_CONFIG, f)
-
-        config["systems"]["aml_system"] = {
-            "type": "AzureML",
-            "accelerators": [{"device": "GPU", "execution_providers": ["CUDAExecutionProvider"]}],
-            "aml_compute": args.aml_compute,
-            "aml_docker_config": {
-                "base_image": "mcr.microsoft.com/azureml/openmpi4.1.0-cuda11.8-cudnn8-ubuntu22.04",
-                "conda_file_path": str(conda_file_path),
-            },
-            "hf_token": bool(args.keyvault_name),
-        }
-        config["workflow_host"] = "aml_system"
 
 
 def add_dataset_options(sub_parser, required=True, include_train=True, include_eval=True):
@@ -521,7 +459,10 @@ def add_dataset_options(sub_parser, required=True, include_train=True, include_e
         "--input_cols",
         type=str,
         nargs="+",
-        help="List of input column names. Provide one or more names separated by space. Example: --input_cols sentence1 sentence2",
+        help=(
+            "List of input column names. Provide one or more names separated by space. Example: --input_cols sentence1"
+            " sentence2"
+        ),
     )
 
     return dataset_group, text_group

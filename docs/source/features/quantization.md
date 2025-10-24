@@ -17,9 +17,6 @@ Please refer to [GptqQuantizer](gptq_quantizer) for more details about the pass 
 }
 ```
 
-Check out [this file](https://github.com/microsoft/Olive/blob/main/examples/llama2/llama2_template.json)
-for an example implementation of `"wikitext2_train"`.
-
 ## AutoAWQ
 AutoAWQ is an easy-to-use package for 4-bit quantized models and it speeds up models by 3x and reduces memory requirements by 3x compared to FP16. AutoAWQ implements the Activation-aware Weight Quantization (AWQ) algorithm for quantizing LLMs. AutoAWQ was created and improved upon from the original work from MIT.
 
@@ -62,8 +59,20 @@ This pass only supports HuggingFace transformer PyTorch models.
 }
 ```
 
+## RTN
+`RTN (Round To Nearest)` is a fast, calibration-free weight quantization method that enables low-bit quantization of large models without relying on gradient-based optimization or calibration datasets. RTN quantization uses simple rounding to the nearest quantization level, making it extremely fast while maintaining reasonable accuracy.
+
+This pass supports ONNX models and can quantize `MatMul` and `Gather` nodes to 4 or 8 bits with block-wise quantization.
+
+### Example Configuration
+```json
+{
+    "type": "OnnxBlockWiseRtnQuantization"
+}
+```
+
 ## HQQ
-`HQQ (Half-Quadratic Quantization)` is a fast, calibration-free weight quantization method that enables low-bit quantization of large models without relying on gradient-based optimization. Unlike data-dependent approaches like GPTQ, [HQQ](https://mobiusml.github.io/hqq_blog/) uses half-quadratic splitting to minimize weight quantization error efficiently.
+`HQQ (Half-Quadratic Quantization)` is a fast, calibration-free weight quantization method that enables low-bit quantization of large models without relying on gradient-based optimization. Unlike data-dependent approaches like GPTQ, [HQQ](https://dropbox.github.io/hqq_blog/) uses half-quadratic splitting to minimize weight quantization error efficiently.
 
 This pass only supports ONNX models, and will only quantize `MatMul` nodes to 4 bits.
 
@@ -137,15 +146,13 @@ d. Specify parameters with user defined values
 }
 ```
 
-Check out [this file](https://github.com/microsoft/Olive/blob/main/examples/bert/user_script.py)
+Check out [this file](https://github.com/microsoft/olive-recipes/blob/main/intel-bert-base-uncased-mrpc/aitk/user_script.py)
 for an example implementation of `"user_script.py"` and `"calib_data_config/dataloader_config/type"`.
-
-check out [this file](https://github.com/microsoft/Olive/tree/main/examples/bert#bert-optimization-with-intel-neural-compressor-ptq-on-cpu) for an example for Intel® Neural Compressor quantization.
 
 ## Quantize with Intel® Neural Compressor
 In addition to the default onnxruntime quantization tool, Olive also integrates [Intel® Neural Compressor](https://github.com/intel/neural-compressor).
 
-Intel® Neural Compressor is a model compression tool across popular deep learning frameworks including TensorFlow, PyTorch, ONNX Runtime (ORT) and MXNet, which supports a variety of powerful model compression techniques, e.g., quantization, pruning, distillation, etc. As a user-experience-driven and hardware friendly tool, Intel® Neural Compressor focuses on providing users with an easy-to-use interface and strives to reach “quantize once, run everywhere” goal.
+Intel® Neural Compressor is a model compression tool across popular deep learning frameworks including TensorFlow, PyTorch, ONNX Runtime (ORT) and MXNet, which supports a variety of powerful model compression techniques, e.g., quantization, pruning, distillation, etc. As a user-experience-driven and hardware friendly tool, Intel® Neural Compressor focuses on providing users with an easy-to-use interface and strives to reach "quantize once, run everywhere" goal.
 
 Olive consolidates the Intel® Neural Compressor dynamic and static quantization into a single pass called `IncQuantization`, and provide the user with the ability to
 tune both quantization methods and hyperparameter at the same time.
@@ -171,25 +178,6 @@ If the user desires to only tune either of dynamic or static quantization, Olive
 Please refer to [IncQuantization](inc_quantization), [IncDynamicQuantization](inc_dynamic_quantization) and
 [IncStaticQuantization](inc_static_quantization) for more details about the passes and their config parameters.
 
-## Quantize with AMD Vitis AI Quantizer
-Olive also integrates [AMD Vitis AI Quantizer](https://github.com/microsoft/Olive/blob/main/olive/passes/onnx/vitis_ai/quantize.py) for quantization.
-
-The Vitis™ AI development environment accelerates AI inference on AMD® hardware platforms. The Vitis AI quantizer can reduce the computing complexity by converting the 32-bit floating-point weights and activations to fixed-point like INT8. The fixed-point network model requires less memory bandwidth, thus providing faster speed and higher power efficiency than the floating-point model.
-Olive consolidates the Vitis™ AI quantization into a single pass called VitisAIQuantization which supports power-of-2 scale quantization methods and supports Vitis AI Execution Provider.
-
-### Example Configuration
-```json
-"vitis_ai_quantization": {
-    "type": "VitisAIQuantization",
-    "calibrate_method":"NonOverflow",
-    "quant_format":"QDQ",
-    "activation_type":"uint8",
-    "precision":"int8",
-    "data_config": "calib_data_config"
-}
-```
-Please refer to [VitisAIQuantization](vitis_ai_quantization) for more details about the pass and its config parameters.
-
 ## NVIDIA TensorRT Model Optimizer-Windows
 Olive also integrates [TensorRT Model Optimizer-Windows](https://github.com/NVIDIA/TensorRT-Model-Optimizer)
 
@@ -209,4 +197,88 @@ Olive consolidates the NVIDIA TensorRT Model Optimizer-Windows quantization into
 }
 ```
 
-Please refer to [Phi3 example](https://github.com/microsoft/Olive/tree/main/examples/phi3#quantize-using-nvidia-tensorrt-model-optimizer)  for usability and setup details.
+Please refer to [Phi3.5 example](https://github.com/microsoft/olive-recipes/tree/main/microsoft-Phi-3.5-mini-instruct/NvTensorRtRtx)  for usability and setup details.
+
+
+## Quantize with AI Model Efficiency Toolkit
+Olive supports quantizing models with Qualcomm's [AI Model Efficiency Toolkit](https://github.com/quic/aimet) (AIMET).
+
+AIMET is a software toolkit for quantizing trained ML models to optimize deployment on edge devices such as mobile phones or laptops. AIMET employs post-training and fine-tuning techniques to minimize accuracy loss during quantization.
+
+Olive consolidates AIMET quantization into a single pass called AimetQuantization which supports LPBQ, SeqMSE, and AdaRound. Multiple techniques can be applied in a single pass by listing them in the techniques array. If no techniques are specified, AIMET applies basic static quantization to the model using the provided data.
+
+| Technique                      | Description                                                                 |
+|--------------------------------|-----------------------------------------------------------------------------|
+| **LPBQ**     | An alternative to blockwise quantization which allows backends to leverage existing per-channel quantization kernels while significantly improving encoding granularity. |
+| **SeqMSE**   | Optimizes the weight encodings of each layer of a model to minimize the difference between the layer's original and quantized outputs. |
+| **AdaRound** | Tunes the rounding direction for quantized model weights to minimize the local quantization error at each layer output. |
+
+### Example Configuration
+
+```json
+{
+    "type": "AimetQuantization",
+    "data_config": "calib_data_config"
+}
+```
+
+#### LPBQ
+
+Configurations:
+
+- `block_size`: Number of input channels to group in each block (default: `64`).
+- `op_types`: List of operator types for which to enable LPBQ (default: `["Gemm", "MatMul", "Conv"]`).
+- `nodes_to_exclude`: List of node names to exclude from LPBQ weight quantization (default: `None`)
+
+
+```json
+{
+    "type": "AimetQuantization",
+    "data_config": "calib_data_config",
+    "techniques": [
+        {"name": "lpbq", "block_size": 64}
+    ]
+}
+```
+
+#### SeqMSE
+
+Configurations:
+
+
+- `data_config`: Data config to use for SeqMSE optimization. Defaults to calibration set if not specified.
+- `num_candidates`: Number of encoding candidates to sweep for each weight (default: `20`).
+
+
+```json
+{
+    "type": "AimetQuantization",
+    "data_config": "calib_data_config",
+    "precision": "int4",
+    "techniques": [
+        {"name": "seqmse", "num_candidates": 20}
+    ]
+}
+```
+
+#### AdaRound
+
+Configurations:
+
+- `num_iterations`: Number of optimization steps to take for each layer (default: `10000`). Recommended value is
+                10K for weight bitwidths >= 8-bits, 15K for weight bitwidths < 8 bits.
+- `nodes_to_exclude`: List of node names to exclude from AdaRound optimization (default: `None`).
+
+
+```json
+{
+    "type": "AimetQuantization",
+    "data_config": "calib_data_config",
+    "techniques": [
+        {"name": "adaround", "num_iterations": 10000, "nodes_to_exclude": ["/lm_head/MatMul"]}
+    ]
+}
+```
+
+Please refer to [AimetQuantization](aimet_quantization) for more details about the pass and its config parameters.
+

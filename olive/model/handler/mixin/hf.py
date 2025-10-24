@@ -112,19 +112,11 @@ class HfMixin:
         # save tokenizer, skip if it already exists
         try:
             get_tokenizer(output_dir)
-        except (OSError, ValueError) as e:
-            # OSError: tokenizer not found in output_dir
-            # ValueError: conversion errors (e.g., SentencePiece/Tiktoken conversion failures)
-            logger.debug("Tokenizer not found or failed to load from %s: %s. Saving from source model.", output_dir, e)
-            try:
-                tokenizer_filepaths = save_tokenizer(self.get_hf_tokenizer(), output_dir, **kwargs)
-                saved_filepaths.extend([fp for fp in tokenizer_filepaths if Path(fp).exists()])
-            except Exception as save_error:
-                logger.warning(
-                    "Failed to save tokenizer for model %s: %s. The model conversion will continue without tokenizer metadata.",
-                    self.model_path,
-                    save_error,
-                )
+        except (OSError, TypeError):
+            # there is no tokenizer in the output_dir, save the tokenizer
+            # "TypeError: not a string" happens with transformers 4.52+
+            tokenizer_filepaths = save_tokenizer(self.get_hf_tokenizer(), output_dir, **kwargs)
+            saved_filepaths.extend([fp for fp in tokenizer_filepaths if Path(fp).exists()])
 
         logger.debug("Save metadata files to %s: %s", output_dir, saved_filepaths)
 

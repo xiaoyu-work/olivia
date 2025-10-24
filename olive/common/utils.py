@@ -25,12 +25,9 @@ logger = logging.getLogger(__name__)
 
 
 if sys.version_info >= (3, 11):
-    from enum import IntEnum, StrEnum
+    from enum import StrEnum
 
     class StrEnumBase(StrEnum):
-        pass
-
-    class IntEnumBase(IntEnum):
         pass
 
 else:
@@ -39,9 +36,6 @@ else:
     class StrEnumBase(str, Enum):
         def __str__(self) -> str:
             return self.value
-
-    class IntEnumBase(int, Enum):
-        pass
 
 
 def run_subprocess(cmd, env=None, cwd=None, check=False):
@@ -497,6 +491,10 @@ def hardlink_copy_dir(src_dir, dst_dir, **kwargs):
     copy_dir(src_dir, dst_dir, copy_function=hardlink_copy_file, dirs_exist_ok=True, **kwargs)
 
 
+def is_hardlink(path: Union[str, Path]) -> bool:
+    return Path(path).stat().st_nlink > 1
+
+
 def set_tempdir(tempdir: str = None):
     """Set the root directory for tempfiles.
 
@@ -531,27 +529,29 @@ def find_first_matched_value(original, keys: Union[str, tuple, list[str]], raise
     return None
 
 
-def get_credentials(default_auth_params: dict = None):
+def get_credentials():
     """Get credentials for MLClient.
 
     Order of credential providers:
     1. Azure CLI
-    2. DefaultAzureCredential
     3. InteractiveBrowserCredential
     """
-    from azure.identity import DefaultAzureCredential, InteractiveBrowserCredential
+    try:
+        from azure.identity import AzureCliCredential, InteractiveBrowserCredential
+    except ImportError:
+        raise ImportError(
+            "azure-identity is not installed. Please install azure-identity packages to use this command."
+        ) from None
 
     logger.debug("Getting credentials for MLClient")
     try:
-        default_auth_params = default_auth_params or {}
-        credential = DefaultAzureCredential(**default_auth_params)
-        # Check if given credential can get token successfully.
+        credential = AzureCliCredential()
         credential.get_token("https://management.azure.com/.default")
-        logger.debug("Using DefaultAzureCredential")
+        logger.debug("Using AzureCliCredential")
     except Exception:
-        logger.warning("Using InteractiveBrowserCredential since of default credential errors", exc_info=True)
-        # Fall back to InteractiveBrowserCredential in case DefaultAzureCredential not work
+        logger.warning("Using InteractiveBrowserCredential since of AzureCliCredential errors", exc_info=True)
         credential = InteractiveBrowserCredential()
+        logger.debug("Using InteractiveBrowserCredential")
 
     return credential
 

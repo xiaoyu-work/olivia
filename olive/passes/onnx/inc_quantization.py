@@ -9,6 +9,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Optional, Union
 
+import onnx
 from packaging import version
 
 from olive.common.config_utils import validate_config
@@ -439,10 +440,10 @@ class IncQuantization(Pass):
     def _set_woq_config(self, run_config):
         # set weight only quantization config for INC API
         weight_only_config = run_config["weight_only_config"]
-        bits = weight_only_config.get("bits", PrecisionBits.BITS4).value
+        bits = int(weight_only_config.get("bits") or PrecisionBits.BITS4)
         group_size = weight_only_config.get("group_size", 32)
         scheme = weight_only_config.get("scheme", "asym")
-        algo = (weight_only_config.get("algorithm") or QuantAlgorithm.RTN).value.upper()
+        algo = (weight_only_config.get("algorithm") or QuantAlgorithm.RTN.value).upper()
         return {"bits": bits, "group_size": group_size, "scheme": scheme, "algorithm": algo}
 
     def _run_for_config(
@@ -522,6 +523,9 @@ class IncQuantization(Pass):
             #  which is data_config's create_dataloader but not create_calibration_dataloader
             inc_calib_dataloader = data_config.to_data_container().create_dataloader()
 
+        # Clear ValueInfoProto for all initializers because INC does not correctly modify them
+        _clear_value_info_proto_for_initializers(model.model_path)
+
         q_model = quantization.fit(
             model.model_path, ptq_config, calib_dataloader=inc_calib_dataloader, eval_func=eval_func
         )
@@ -531,13 +535,17 @@ class IncQuantization(Pass):
                 "find any quantized model which meet accuracy goal. "
                 "Try to increase 'max_trials' in 'tuning_criterion'."
             )
+        if q_model is None:
+            raise OlivePassError(
+                "Intel® Neural Compressor quantization failed to quantize the model. "
+                "Please check the log for more details."
+            )
 
         # reload weight for model with size > 2GB to prevent error of missing weight files
         if q_model.is_large_model:
             from onnx.external_data_helper import load_external_data_for_model
 
-            # pylint: disable=protected-access
-            load_external_data_for_model(q_model.model, os.path.dirname(q_model._model_path))
+            load_external_data_for_model(q_model.model, os.path.dirname(q_model._model_path))  # pylint: disable=protected-access
 
         # save the model to the output path and return the model
         return model_proto_to_olive_model(q_model.model, output_model_path, config)
@@ -588,3 +596,18 @@ class IncStaticQuantization(IncQuantization):
         # external data config
         config.update(get_external_data_config())
         return config
+
+
+def _clear_value_info_proto_for_initializers(model_path: str) -> None:
+    """Clear ValueInfoProto for all initializers in the ONNX model."""
+    model = onnx.load(model_path, load_external_data=False)
+    all_initializer_names = {initializer.name for initializer in model.graph.initializer}
+    new_value_info = []
+    for info in model.graph.value_info:
+        if info.name in all_initializer_names:
+            continue
+        # If the value info is not in the initializers, we keep it
+        new_value_info.append(info)
+    del model.graph.value_info[:]
+    model.graph.value_info.extend(new_value_info)
+    onnx.save(model, model_path)

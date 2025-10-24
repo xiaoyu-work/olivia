@@ -23,7 +23,6 @@ from olive.evaluator.metric import Metric
 from olive.evaluator.metric_result import MetricResult, joint_metric_key
 from olive.evaluator.olive_evaluator import OliveEvaluatorConfig
 from olive.exception import EXCEPTIONS_TO_RAISE, OlivePassError
-from olive.hardware import AcceleratorSpec
 from olive.logging import enable_filelog
 from olive.model import ModelConfig
 from olive.package_config import OlivePackageConfig
@@ -31,10 +30,10 @@ from olive.search.search_sample import SearchSample
 from olive.search.search_strategy import SearchStrategy, SearchStrategyConfig
 from olive.systems.common import SystemType
 from olive.systems.system_config import SystemConfig
-from olive.systems.utils import create_managed_system_with_cache
 
 if TYPE_CHECKING:
     from olive.engine.packaging.packaging_config import PackagingConfig
+    from olive.hardware import AcceleratorSpec
     from olive.passes.olive_pass import Pass
     from olive.search.search_parameter import SearchParameter
 
@@ -58,8 +57,6 @@ class Engine:
         cache_config: Optional[Union[dict[str, Any], CacheConfig]] = None,
         plot_pareto_frontier: bool = False,
         no_artifacts: bool = False,
-        *,
-        azureml_client_config=None,
     ):
         self.olive_config = olive_config or OlivePackageConfig.load_default_config()
         self.workflow_id = workflow_id
@@ -83,7 +80,6 @@ class Engine:
 
         self.plot_pareto_frontier = plot_pareto_frontier
         self.skip_saving_artifacts = no_artifacts
-        self.azureml_client_config = azureml_client_config
 
         self.input_passes_configs: dict[str, list[RunPassConfig]] = OrderedDict()
         self.computed_passes_configs: dict[str, RunPassConfig] = OrderedDict()
@@ -100,24 +96,21 @@ class Engine:
         # might be used by other parts of olive to cache data
         self.cache.set_cache_env()
 
-        # prepare non-local resources if host/target is not AzureML
+        # prepare non-local resources
         # TODO(anyone): Should the shared cache care about this? If so, the shared cache helper can
         # check for cached non-local resource paths and replace them with the original config
         # during hash calculation.
-        if self.target_config.type != SystemType.AzureML:
-            if self.evaluator_config:
-                self.evaluator_config = self.cache.prepare_resources_for_local(self.evaluator_config)
-
-            for passes_configs in self.input_passes_configs.values():
-                for pass_config in passes_configs:
-                    if pass_config.evaluator:
-                        pass_config.evaluator = self.cache.prepare_resources_for_local(pass_config.evaluator)
+        if self.evaluator_config:
+            self.evaluator_config = self.cache.prepare_resources_for_local(self.evaluator_config)
 
         for passes_configs in self.input_passes_configs.values():
             for pass_config in passes_configs:
-                host_type = pass_config.host.system_type if pass_config.host else self.host_config.type
-                if host_type != SystemType.AzureML:
-                    pass_config.config = self.cache.prepare_resources_for_local(pass_config.config)
+                if pass_config.evaluator:
+                    pass_config.evaluator = self.cache.prepare_resources_for_local(pass_config.evaluator)
+
+        for passes_configs in self.input_passes_configs.values():
+            for pass_config in passes_configs:
+                pass_config.config = self.cache.prepare_resources_for_local(pass_config.config)
 
         self._initialized = True
 
@@ -227,7 +220,7 @@ class Engine:
             )
             accelerator_output_dir.mkdir(parents=True, exist_ok=True)
             accelerator_output_dir_list.append(accelerator_output_dir)
-            with self._create_system(accelerator_spec):
+            with self._create_system():
                 run_result = self.run_accelerator(
                     input_model_config,
                     accelerator_output_dir,
@@ -252,7 +245,6 @@ class Engine:
                     packaging_config,
                     workflow_output,
                     output_dir,
-                    self.azureml_client_config,
                 )
             else:
                 logger.debug("No packaging config provided, skip packaging artifacts")
@@ -264,7 +256,7 @@ class Engine:
             if len(accelerator_output_dir_list) > 1 and self.skip_saving_artifacts:
                 [shutil.rmtree(folder) for folder in accelerator_output_dir_list if folder.exists()]
         else:
-            logger.warning("No output model")
+            logger.warning("No output model produced. Please check the log for details.")
 
         return workflow_output
 
@@ -455,6 +447,7 @@ class Engine:
         for sample in self.search_strategy:  # pylint: disable=not-an-iterable
             self._compute_search_pass_configs(accelerator_spec, sample)
 
+            should_prune, signal, model_ids = True, None, []
             if self.computed_passes_configs:
                 # get the model id of the first input model
                 model_id = sample.model_ids[0]
@@ -464,10 +457,16 @@ class Engine:
                     "Step %d with search point %s ...", self.search_strategy.iteration_count, sample.search_point
                 )
 
-                # run all the passes in the step
-                should_prune, signal, model_ids = self._run_passes(model_config, model_id, accelerator_spec)
-            else:
-                should_prune, signal, model_ids = True, None, []
+                try:
+                    # run all the passes in the step
+                    should_prune, signal, model_ids = self._run_passes(model_config, model_id, accelerator_spec)
+                except Exception:
+                    logger.warning(
+                        "Step %d search point %s ... FAILED.",
+                        self.search_strategy.iteration_count,
+                        sample.search_point,
+                        exc_info=True,
+                    )
 
             # record feedback signal
             self.search_strategy.record_feedback_signal(sample.search_point.index, signal, model_ids, should_prune)
@@ -728,17 +727,11 @@ class Engine:
             input_model_config = self.cache.download_shared_cache_model(input_model_config, input_model_id)
 
         host = self.host_for_pass(pass_name)
-        if host.system_type != SystemType.AzureML:
-            input_model_config = self.cache.prepare_resources_for_local(input_model_config)
+        input_model_config = self.cache.prepare_resources_for_local(input_model_config)
 
         try:
             if p.run_on_target:
-                if self.target.system_type == SystemType.IsolatedORT:
-                    logger.warning(
-                        "Cannot run pass %s on IsolatedORT target, will use the host to run the pass.", pass_name
-                    )
-                else:
-                    host = self.target
+                host = self.target
 
             output_model_config = host.run_pass(p, input_model_config, output_model_path)
         except OlivePassError:
@@ -833,8 +826,7 @@ class Engine:
             return signal
 
         # evaluate model
-        if self.target.system_type != SystemType.AzureML:
-            model_config = self.cache.prepare_resources_for_local(model_config)
+        model_config = self.cache.prepare_resources_for_local(model_config)
         signal = self.target.evaluate_model(model_config, evaluator_config, accelerator_spec)
 
         # cache evaluation
@@ -851,49 +843,22 @@ class Engine:
         return signal
 
     @contextmanager
-    def _create_system(self, accelerator_spec):
-        def create_system(config: "SystemConfig", accelerator_spec):
+    def _create_system(self):
+        def create_system(config: "SystemConfig"):
             assert config, "System config is not provided"
-            if config.olive_managed_env:
-                logger.debug(
-                    "Creating olive_managed_env %s with EP %s", config.type, accelerator_spec.execution_provider
-                )
-                return create_managed_system_with_cache(config, accelerator_spec)
-            else:
-                logger.debug("create native OliveSystem %s", config.type)
-                return config.create_system()
+            logger.debug("create native OliveSystem %s", config.type)
+            return config.create_system()
 
         if not self.target:
             logger.info("Creating target system ...")
             target_start_time = time.time()
-            self.target = create_system(self.target_config, accelerator_spec)
+            self.target = create_system(self.target_config)
             logger.info("Target system created in %f seconds", time.time() - target_start_time)
 
         if not self.host:
-            host_accelerators = self.host_config.config.accelerators
-            if host_accelerators and host_accelerators[0].execution_providers:
-                host_accelerator_spec = AcceleratorSpec(
-                    host_accelerators[0].device,
-                    host_accelerators[0].execution_providers[0],
-                    memory=host_accelerators[0].memory,
-                )
-            else:
-                host_accelerator_spec = None
             logger.info("Creating host system ...")
             host_start_time = time.time()
-            self.host = create_system(self.host_config, host_accelerator_spec)
+            self.host = create_system(self.host_config)
             logger.info("Host system created in %f seconds", time.time() - host_start_time)
 
         yield
-
-        if self.target_config.olive_managed_env:
-            # could we put it under cache system for reusing?
-            logger.info("Removing target system ...")
-            self.target.remove()
-            self.target = None
-        if self.host_config.olive_managed_env:
-            logger.info("Removing host system ...")
-            self.host.remove()
-            self.host = None
-
-        create_managed_system_with_cache.cache_clear()

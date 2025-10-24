@@ -1,4 +1,4 @@
-# How to prepare Olive configuration
+# How To Write New Olive workflow
 
 To convert, quantize, optimize and tune your model Olive needs information about your model. For example, how to load the model, name and shape of input tensors. You can also select the target hardware and list of optimizations you want to perform on the model. You can provide this information in a json file as an input to the Olive. In this document we will walk through how to generate such .json configuration from scratch.
 
@@ -9,7 +9,7 @@ olive run --config my_model_processing_description.json
 ```
 
 > **Note:**
-> If you prefer to run Olive workflows programmatically or want to access optimization results from Python, refer to the [Python Interface documentation](../../extending/python_interface.md) for details on using Olive from Python.
+> If you prefer to run Olive workflows programmatically or want to access optimization results from Python, refer to the [Python Interface documentation](../python_api.md) for details on using Olive from Python.
 
 
 ## Input Model
@@ -22,7 +22,7 @@ Let's use Phi-3.5 available on Hugging Face ( https://huggingface.co/microsoft/P
         "model_path": "microsoft/Phi-3.5-mini-instruct"
     }
 ```
-Olive supports a number of different input model types including **HuggingFace**, **Pytorch**, **ONNX**, **OpenVINO**, **QNN**, **SNPE**, **TensorFlow**, and **Composite**. For detailed instructions on configuring your input model, see [how to configure input model](../configure-workflows/how-to-configure-model.md).
+Olive supports a number of different input model types including **HuggingFace**, **Pytorch**, **ONNX**, **OpenVINO**, **QNN**, **TensorFlow**, and **Composite**. For detailed instructions on configuring your input model, see [how to configure input model](../configure-workflows/how-to-configure-model.md).
 
 ## Passes to apply
 

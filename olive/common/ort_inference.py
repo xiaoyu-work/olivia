@@ -2,18 +2,17 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
 # --------------------------------------------------------------------------
-# NOTE: Only onnxruntime and its dependencies can be imported in this file!!!
-# Import them lazily since onnxruntime is not a required dependency for Olive.
+# Import onnxruntime lazily since it is not a required dependency for Olive.
 # Import in TYPE_CHECKING block for type hinting is fine.
 import collections
 import logging
+import platform
 import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, Union
 
 import numpy as np
-from packaging import version
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -28,50 +27,88 @@ class OrtSessionFallbackError(Exception):
     """Raised when the onnxruntime fallback happens."""
 
 
-def is_winml_installation() -> bool:
-    from onnxruntime import __version__ as OrtVersion
+def ort_supports_ep_devices() -> bool:
+    import onnxruntime as ort
 
-    if version.parse(OrtVersion) >= version.parse("1.22.0"):
+    # ep registration and device discovery are not well defined on Linux
+    # checking for api availability instead of ort version since Windows ML has this API in 1.22 and ORT in 1.23
+    return platform.system() == "Windows" and hasattr(ort, "get_ep_devices")
+
+
+def maybe_register_ep_libraries(ep_paths: dict[str, str]):
+    """Register execution provider libraries if onnxruntime supports it."""
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        logger.debug("Skipping EP registration since onnxruntime is not installed")
+        return
+
+    if not ort_supports_ep_devices():
+        return
+
+    # providers that ort was built with such as CUDA, QNN, VitisAI but need registration
+    for provider in set(ort.get_available_providers()):
+        if ep_paths.get(provider) is None:
+            builtin_library_name = f"onnxruntime_providers_{provider.replace('ExecutionProvider', '').lower()}.dll"
+            if (Path(ort.__file__).parent / "capi" / builtin_library_name).exists():
+                ep_paths[provider] = builtin_library_name
+
+    for ep_name, ep_path in ep_paths.items():
+        if ep_path is None:
+            continue
+
         try:
-            from onnxruntime import winml  # noqa: F401 # pylint: disable=unused-import
-        except ImportError:
-            logger.info("onnxruntime-winml not installed")
-            return False
-        return True
-    return False
+            logger.debug("Registering EP %s with path %s", ep_name, ep_path)
+            ort.register_execution_provider_library(ep_name, ep_path)
+        except Exception as e:
+            if "already registered" in str(e):
+                logger.debug("Execution provider %s is already registered, skipping registration.", ep_name)
+            else:
+                raise
+
+
+def get_ort_available_providers():
+    """Get the available providers for ONNXRuntime."""
+    import onnxruntime as ort
+
+    if not ort_supports_ep_devices():
+        # what ORT was built with. Session will be created directly with InferenceSession(model_path, providers=["ProviderName"])
+        return ort.get_available_providers()
+
+    # only return registered EPs since session with be created with SessionOptions.add_provider_for_devices()
+    # this is ordered by priority
+    all_providers = ort.get_all_providers()
+    available_provider_set = {ep_device.ep_name for ep_device in ort.get_ep_devices()}
+    return [ep_name for ep_name in all_providers if ep_name in available_provider_set]
 
 
 def get_ort_hardware_device_type(device: Union["Device", str]):
-    if is_winml_installation():
-        from onnxruntime import OrtHardwareDeviceType
+    from onnxruntime import OrtHardwareDeviceType
 
-        mapping = {
-            "cpu": OrtHardwareDeviceType.CPU,
-            "gpu": OrtHardwareDeviceType.GPU,
-            "npu": OrtHardwareDeviceType.NPU,
-        }
-        return mapping.get(device.lower())
-    return None
+    mapping = {
+        "cpu": OrtHardwareDeviceType.CPU,
+        "gpu": OrtHardwareDeviceType.GPU,
+        "npu": OrtHardwareDeviceType.NPU,
+    }
+    return mapping.get(device.lower())
 
 
 def get_ort_execution_provider_device_policy(policy: str):
-    if is_winml_installation():
-        from onnxruntime import OrtExecutionProviderDevicePolicy
+    from onnxruntime import OrtExecutionProviderDevicePolicy
 
-        mapping = {
-            "default": OrtExecutionProviderDevicePolicy.DEFAULT,
-            "prefer_cpu": OrtExecutionProviderDevicePolicy.PREFER_CPU,
-            "prefer_npu": OrtExecutionProviderDevicePolicy.PREFER_NPU,
-            "prefer_gpu": OrtExecutionProviderDevicePolicy.PREFER_GPU,
-            "max_performance": OrtExecutionProviderDevicePolicy.MAX_PERFORMANCE,
-            "max_efficiency": OrtExecutionProviderDevicePolicy.MAX_EFFICIENCY,
-            "overall_power": OrtExecutionProviderDevicePolicy.MIN_OVERALL_POWER,
-        }
-        return mapping.get(policy.lower())
-    return None
+    mapping = {
+        "default": OrtExecutionProviderDevicePolicy.DEFAULT,
+        "prefer_cpu": OrtExecutionProviderDevicePolicy.PREFER_CPU,
+        "prefer_npu": OrtExecutionProviderDevicePolicy.PREFER_NPU,
+        "prefer_gpu": OrtExecutionProviderDevicePolicy.PREFER_GPU,
+        "max_performance": OrtExecutionProviderDevicePolicy.MAX_PERFORMANCE,
+        "max_efficiency": OrtExecutionProviderDevicePolicy.MAX_EFFICIENCY,
+        "overall_power": OrtExecutionProviderDevicePolicy.MIN_OVERALL_POWER,
+    }
+    return mapping.get(policy.lower())
 
 
-def initialize_inference_session_options_for_winml(
+def initialize_inference_session_options(
     sess_options, device, providers, provider_options, provider_selection_policy=None
 ):
     import onnxruntime as ort
@@ -80,8 +117,17 @@ def initialize_inference_session_options_for_winml(
     provider_options = provider_options or []
     provider_options_by_ep = dict(zip(providers, provider_options))
     ort_device_type = get_ort_hardware_device_type(device)
+
+    # ort.get_ep_devices may return ep_devices with the same ep_name and device, for example when connecting remotely or when there are multiple graph cards.
+    # However, in onnxruntime, each EP name can only be added once. See: https://github.com/microsoft/onnxruntime/blob/fb0f6c652be5db0a3182c424a995efecf792d41c/onnxruntime/core/framework/execution_providers.h#L75
+    added_ep_names = set()
     for ep_device in ort.get_ep_devices():
-        if ep_device.device.type == ort_device_type and ep_device.ep_name in provider_options_by_ep:
+        if (
+            ep_device.device.type == ort_device_type
+            and ep_device.ep_name in provider_options_by_ep
+            and ep_device.ep_name not in added_ep_names
+        ):
+            added_ep_names.add(ep_device.ep_name)
             sess_options.add_provider_for_devices([ep_device], provider_options_by_ep.get(ep_device.ep_name) or {})
 
     if provider_selection_policy:
@@ -169,13 +215,19 @@ def get_ort_inference_session(
     providers, provider_options = check_and_normalize_provider_args(
         inference_settings.get("execution_provider"),
         inference_settings.get("provider_options"),
-        ort.get_available_providers(),
+        get_ort_available_providers(),
     )
     for idx, provider in enumerate(providers):
         if provider in ["CUDAExecutionProvider", "DmlExecutionProvider"] and device_id is not None:
             provider_options[idx]["device_id"] = str(device_id)
-        elif provider == "QNNExecutionProvider":
+        elif (
+            provider == "QNNExecutionProvider"
+            and "backend_path" not in provider_options[idx]
+            and not ort_supports_ep_devices
+        ):
             # add backend_path for QNNExecutionProvider
+            # not required after 1.22.
+            # Causes backend load failure for Windows ML where this dll is in a different location than the ort dlls
             provider_options[idx]["backend_path"] = "QnnHtp.dll"
     logger.debug("Normalized providers: %s, provider_options: %s", providers, provider_options)
 
@@ -184,8 +236,8 @@ def get_ort_inference_session(
         sess_options.enable_mem_pattern = False
 
     sess_kwargs = {}
-    if is_winml_installation():
-        initialize_inference_session_options_for_winml(
+    if ort_supports_ep_devices():
+        initialize_inference_session_options(
             sess_options, device, providers, provider_options, inference_settings.get("provider_selection_policy")
         )
     else:

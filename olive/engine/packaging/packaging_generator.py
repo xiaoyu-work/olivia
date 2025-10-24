@@ -4,35 +4,22 @@
 # --------------------------------------------------------------------------
 import json
 import logging
-import platform
 import shutil
-import sys
 import tempfile
-import urllib.request
 from collections import OrderedDict
 from pathlib import Path
-from string import Template
-from typing import TYPE_CHECKING, Union
+from typing import Union
 
-import pkg_resources
-
-from olive.common.constants import OS
-from olive.common.utils import retry_func, run_subprocess
 from olive.engine.output import ModelOutput, WorkflowOutput
 from olive.engine.packaging.packaging_config import (
-    AzureMLDeploymentPackagingConfig,
     DockerfilePackagingConfig,
-    InferencingServerType,
     PackagingConfig,
     PackagingType,
 )
 from olive.hardware.accelerator import AcceleratorSpec
 from olive.model import ONNXModelHandler
+from olive.passes.onnx.common import add_version_metadata_to_model_proto
 from olive.resource_path import ResourceType, create_resource_path
-from olive.systems.utils import get_package_name_from_ep
-
-if TYPE_CHECKING:
-    from olive.azureml.azureml_client import AzureMLClientConfig
 
 logger = logging.getLogger(__name__)
 
@@ -43,16 +30,13 @@ def generate_output_artifacts(
     packaging_configs: Union[PackagingConfig, list[PackagingConfig]],
     workflow_output: WorkflowOutput,
     output_dir: Path,
-    azureml_client_config: "AzureMLClientConfig" = None,
 ):
     packaging_config_list = packaging_configs if isinstance(packaging_configs, list) else [packaging_configs]
     for packaging_config in packaging_config_list:
-        if packaging_config.type == PackagingType.AzureMLDeployment:
-            _package_azureml_deployment(packaging_config, workflow_output, azureml_client_config)
-        elif packaging_config.type == PackagingType.Dockerfile:
+        if packaging_config.type == PackagingType.Dockerfile:
             _package_dockerfile(packaging_config, workflow_output, output_dir)
         else:
-            _package_candidate_models(packaging_config, output_dir, workflow_output, azureml_client_config)
+            _package_candidate_models(packaging_config, output_dir, workflow_output)
 
 
 def _package_dockerfile(
@@ -82,12 +66,6 @@ def _package_dockerfile(
         model_config["config"].get("inference_settings", None),
         False,
     )
-    if packaging_config.include_runtime_packages:
-        if packaging_config.generative:
-            _package_onnxruntime_genai_runtime_dependencies(content_path, False)
-        else:
-            output_models = workflow_output.get_output_models()
-            _package_onnxruntime_runtime_dependencies(content_path, output_models, "310", False)
 
     dockerfile_base_path = Path(__file__).parent / "Dockerfile.base"
     with open(dockerfile_base_path) as file:
@@ -101,205 +79,10 @@ def _package_dockerfile(
         file.writelines(filedata)
 
 
-def _package_azureml_deployment(
-    packaging_config: PackagingConfig,
-    workflow_output: WorkflowOutput,
-    azureml_client_config: "AzureMLClientConfig" = None,
-):
-    from azure.ai.ml.entities import (
-        AzureMLBatchInferencingServer,
-        AzureMLOnlineInferencingServer,
-        BaseEnvironment,
-        BatchDeployment,
-        BatchEndpoint,
-        CodeConfiguration,
-        ManagedOnlineDeployment,
-        ManagedOnlineEndpoint,
-        ModelConfiguration,
-        ModelPackage,
-    )
-    from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError, ServiceResponseError
-
-    config: AzureMLDeploymentPackagingConfig = packaging_config.config
-    if config.export_in_mlflow_format:
-        logger.warning("Exporting model in MLflow format is not supported for AzureML endpoint packaging.")
-
-    try:
-        # Get best model from workflow output
-        model_config = workflow_output.get_best_candidate().olive_model_config
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            tempdir = Path(temp_dir)
-
-            _save_model(
-                model_config["config"].get("model_path", None),
-                model_config["type"],
-                model_config,
-                tempdir,
-                model_config["config"].get("inference_settings", None),
-                False,
-            )
-
-            # Register model to AzureML
-            _upload_to_azureml_models(
-                azureml_client_config,
-                tempdir,
-                config.model_name,
-                config.model_version,
-                config.model_description,
-                False,
-            )
-
-        ml_client = azureml_client_config.create_client()
-
-        # AzureML package config
-        model_package_config = config.model_package
-
-        code_folder = Path(model_package_config.inferencing_server.code_folder)
-        assert code_folder.exists(), f"Code folder {code_folder} does not exist."
-
-        scoring_script = code_folder / model_package_config.inferencing_server.scoring_script
-        assert scoring_script.exists(), f"Scoring script {scoring_script} does not exist."
-
-        code_configuration = CodeConfiguration(
-            code=model_package_config.inferencing_server.code_folder,
-            scoring_script=model_package_config.inferencing_server.scoring_script,
-        )
-
-        inferencing_server = None
-        if model_package_config.inferencing_server.type == InferencingServerType.AzureMLOnline:
-            inferencing_server = AzureMLOnlineInferencingServer(code_configuration=code_configuration)
-        elif model_package_config.inferencing_server.type == InferencingServerType.AzureMLBatch:
-            inferencing_server = AzureMLBatchInferencingServer(code_configuration=code_configuration)
-
-        model_configuration = None
-        if model_package_config.model_configurations:
-            model_configuration = ModelConfiguration(
-                mode=model_package_config.model_configurations.mode,
-                mount_path=model_package_config.model_configurations.mount_path,
-            )
-
-        base_environment_source = BaseEnvironment(
-            type="EnvironmentAsset", resource_id=model_package_config.base_environment_id
-        )
-
-        package_request = ModelPackage(
-            target_environment=model_package_config.target_environment,
-            inferencing_server=inferencing_server,
-            base_environment_source=base_environment_source,
-            target_environment_version=model_package_config.target_environment_version,
-            model_configuration=model_configuration,
-            environment_variables=model_package_config.environment_variables,
-        )
-
-        # invoke model package operation
-        model_package = retry_func(
-            func=ml_client.models.package,
-            kwargs={"name": config.model_name, "version": config.model_version, "package_request": package_request},
-            max_tries=azureml_client_config.max_operation_retries,
-            delay=azureml_client_config.operation_retry_interval,
-            exceptions=ServiceResponseError,
-        )
-
-        logger.info(
-            "Target environment created successfully: name: %s, version: %s",
-            model_package_config.target_environment,
-            model_package_config.target_environment_version,
-        )
-
-        # Deploy model package
-        deployment_config = config.deployment_config
-
-        # Get endpoint
-        try:
-            endpoint = retry_func(
-                ml_client.online_endpoints.get,
-                [deployment_config.endpoint_name],
-                max_tries=azureml_client_config.max_operation_retries,
-                delay=azureml_client_config.operation_retry_interval,
-                exceptions=ServiceResponseError,
-            )
-            logger.info(
-                "Endpoint %s already exists. The scoring_uri is: %s",
-                deployment_config.endpoint_name,
-                endpoint.scoring_uri,
-            )
-        except ResourceNotFoundError:
-            logger.info("Endpoint %s does not exist. Creating a new endpoint...", deployment_config.endpoint_name)
-            if model_package_config.inferencing_server.type == InferencingServerType.AzureMLOnline:
-                endpoint = ManagedOnlineEndpoint(
-                    name=deployment_config.endpoint_name,
-                    description="this is an endpoint created by Olive automatically",
-                )
-            elif model_package_config.inferencing_server.type == InferencingServerType.AzureMLBatch:
-                endpoint = BatchEndpoint(
-                    name=deployment_config.endpoint_name,
-                    description="this is an endpoint created by Olive automatically",
-                )
-
-            endpoint = retry_func(
-                ml_client.online_endpoints.begin_create_or_update,
-                [endpoint],
-                max_tries=azureml_client_config.max_operation_retries,
-                delay=azureml_client_config.operation_retry_interval,
-                exceptions=ServiceResponseError,
-            ).result()
-            logger.info(
-                "Endpoint %s created successfully. The scoring_uri is: %s",
-                deployment_config.endpoint_name,
-                endpoint.scoring_uri,
-            )
-
-        deployment = None
-        extra_config = deployment_config.extra_config or {}
-        if model_package_config.inferencing_server.type == InferencingServerType.AzureMLOnline:
-            deployment = ManagedOnlineDeployment(
-                name=deployment_config.deployment_name,
-                endpoint_name=deployment_config.endpoint_name,
-                environment=model_package,
-                instance_type=deployment_config.instance_type,
-                instance_count=deployment_config.instance_count,
-                **extra_config,
-            )
-
-        elif model_package_config.inferencing_server.type == InferencingServerType.AzureMLBatch:
-            deployment = BatchDeployment(
-                name=deployment_config.deployment_name,
-                endpoint_name=deployment_config.endpoint_name,
-                environment=model_package,
-                compute=deployment_config.compute,
-                mini_batch_size=deployment_config.mini_batch_size,
-                **extra_config,
-            )
-        deployment = retry_func(
-            ml_client.online_deployments.begin_create_or_update,
-            [deployment],
-            max_tries=azureml_client_config.max_operation_retries,
-            delay=azureml_client_config.operation_retry_interval,
-            exceptions=ServiceResponseError,
-        ).result()
-        logger.info("Deployment %s created successfully", deployment.name)
-
-    except ResourceNotFoundError:
-        logger.exception(
-            "Failed to package AzureML deployment. The resource is not found. Please check the exception details."
-        )
-        raise
-    except ResourceExistsError:
-        logger.exception(
-            "Failed to package AzureML deployment. The resource already exists. Please check the exception details."
-        )
-        raise
-    except Exception:
-        logger.exception("Failed to package AzureML deployment. Please check the exception details.")
-        raise
-
-
 def _package_candidate_models(
     packaging_config: PackagingConfig,
     output_dir: Path,
     workflow_output: WorkflowOutput,
-    azureml_client_config: "AzureMLClientConfig" = None,
 ):
     packaging_type = packaging_config.type
     output_name = packaging_config.name
@@ -310,13 +93,6 @@ def _package_candidate_models(
 
     with tempfile.TemporaryDirectory() as temp_dir:
         tempdir = Path(temp_dir)
-
-        if packaging_type == PackagingType.Zipfile and packaging_config.include_runtime_packages:
-            if packaging_config.generative:
-                _package_onnxruntime_genai_runtime_dependencies(tempdir)
-            else:
-                output_models = workflow_output.get_output_models()
-                _package_onnxruntime_runtime_dependencies(tempdir, output_models, _get_python_version())
 
         output_model_list = workflow_output.get_output_models()
         model_rank = 1
@@ -355,84 +131,11 @@ def _package_candidate_models(
             model_info_list.append(model_info)
             _copy_model_info(model_dir, model_info)
 
-            if packaging_type == PackagingType.AzureMLModels:
-                _upload_to_azureml_models(
-                    azureml_client_config,
-                    model_dir,
-                    model_name,
-                    config.version,
-                    config.description,
-                    export_in_mlflow_format,
-                )
-            elif packaging_type == PackagingType.AzureMLData:
-                _upload_to_azureml_data(
-                    azureml_client_config, model_dir, model_name, config.version, config.description
-                )
-
             model_rank += 1
 
         if model_info_list and packaging_type == PackagingType.Zipfile:
             _copy_models_rank(tempdir, model_info_list)
             _package_zipfile_model(output_dir, output_name, tempdir)
-
-
-def _upload_to_azureml_models(
-    azureml_client_config: "AzureMLClientConfig",
-    model_path: Path,
-    model_name: str,
-    version: Union[int, str],
-    description: str,
-    export_in_mlflow_format: bool,
-):
-    """Upload model to AzureML workspace Models."""
-    from azure.ai.ml.constants import AssetTypes
-    from azure.ai.ml.entities import Model
-    from azure.core.exceptions import ServiceResponseError
-
-    ml_client = azureml_client_config.create_client()
-    model = Model(
-        path=model_path,
-        type=AssetTypes.MLFLOW_MODEL if export_in_mlflow_format else AssetTypes.CUSTOM_MODEL,
-        name=model_name,
-        version=str(version),
-        description=description,
-    )
-    retry_func(
-        ml_client.models.create_or_update,
-        [model],
-        max_tries=azureml_client_config.max_operation_retries,
-        delay=azureml_client_config.operation_retry_interval,
-        exceptions=ServiceResponseError,
-    )
-
-
-def _upload_to_azureml_data(
-    azureml_client_config: "AzureMLClientConfig",
-    model_path: Path,
-    model_name: str,
-    version: Union[int, str],
-    description: str,
-):
-    """Upload model as Data to AzureML workspace Data."""
-    from azure.ai.ml.constants import AssetTypes
-    from azure.ai.ml.entities import Data
-    from azure.core.exceptions import ServiceResponseError
-
-    ml_client = azureml_client_config.create_client()
-    data = Data(
-        path=str(model_path),
-        type=AssetTypes.URI_FILE if model_path.is_file() else AssetTypes.URI_FOLDER,
-        description=description,
-        name=model_name,
-        version=str(version),
-    )
-    retry_func(
-        ml_client.data.create_or_update,
-        [data],
-        max_tries=azureml_client_config.max_operation_retries,
-        delay=azureml_client_config.operation_retry_interval,
-        exceptions=ServiceResponseError,
-    )
 
 
 def _get_model_info(model_output: "ModelOutput", model_rank: int, relative_path: str, packaging_type: PackagingType):
@@ -563,6 +266,8 @@ def _generate_onnx_mlflow_model(model_dir: Path, inference_config: dict):
     # MLFlow will save models with default config save_as_external_data=True
     # https://github.com/mlflow/mlflow/blob/1d6eaaa65dca18688d9d1efa3b8b96e25801b4e9/mlflow/onnx.py#L175
     # There will be an alphanumeric file generated in the same folder as the model file
+    # Add olive version to metadata
+    add_version_metadata_to_model_proto(model_proto)
     mlflow.onnx.save_model(
         model_proto,
         mlflow_model_path,
@@ -570,216 +275,3 @@ def _generate_onnx_mlflow_model(model_dir: Path, inference_config: dict):
         onnx_session_options=session_dict,
     )
     return mlflow_model_path
-
-
-def create_python_download_command(base_url=None):
-    command = f"{sys.executable} -m pip download"
-    if base_url:
-        command += f" -i {base_url}"
-    command += " $package_name==$version --no-deps -d $python_download_path --python-version=$python_version"
-    return Template(command)
-
-
-def _package_onnxruntime_genai_runtime_dependencies(save_path: Path, download_c_packages: bool = True):
-    # pylint: disable=not-an-iterable
-    installed_packages = [
-        pkg
-        for pkg in pkg_resources.working_set
-        if pkg.key.startswith("onnxruntime-genai") or pkg.project_name.startswith("onnxruntime-genai")
-    ]
-    if not installed_packages:
-        logger.warning("ONNXRuntime-GenAI package is not installed. Skip packaging runtime packages.")
-        return
-
-    DOWNLOAD_COMMAND_TEMPLATE = create_python_download_command()
-    python_download_path = save_path / "ONNXRuntimePackages" / "python"
-    python_download_path.mkdir(parents=True, exist_ok=True)
-    python_download_path = str(python_download_path)
-
-    for pkg in installed_packages:
-        pkg_name = pkg.key if pkg.key.startswith("onnxruntime-genai") else pkg.project_name
-        download_command = DOWNLOAD_COMMAND_TEMPLATE.substitute(
-            package_name=pkg_name,
-            version=pkg.version,
-            python_download_path=python_download_path,
-            python_version=f"{sys.version_info.major}.{sys.version_info.minor}",
-        )
-
-        try:
-            run_subprocess(download_command)
-        except Exception:
-            logger.exception(
-                "Failed to download %s package. Please manually download & install the required package.", pkg_name
-            )
-
-    # Download CPP && CS onnxruntime-genai packages
-    if download_c_packages:
-        ort_version = installed_packages[0].version
-        lang_list = ("cpp", "cs")
-        for language in lang_list:
-            ort_download_path = save_path / "ONNXRuntimePackages" / language
-            ort_download_path.mkdir(parents=True, exist_ok=True)
-            _download_native_onnx_packages(installed_packages, ort_version, ort_download_path)
-
-
-def _package_onnxruntime_runtime_dependencies(
-    save_path: Path, output_models: list[ModelOutput], python_version: str, download_c_packages: bool = True
-):
-    # pylint: disable=not-an-iterable
-    installed_packages = pkg_resources.working_set
-    onnxruntime_pkg = [i for i in installed_packages if i.key.startswith("onnxruntime")]
-    ort_nightly_pkg = [i for i in installed_packages if i.key.startswith("ort-nightly")]
-    is_nightly = bool(ort_nightly_pkg)
-    is_stable = bool(onnxruntime_pkg)
-
-    if not is_nightly and not is_stable:
-        logger.warning("ONNXRuntime package is not installed. Skip packaging ONNXRuntime package.")
-        return
-
-    if is_nightly and is_stable:
-        logger.warning("Both ONNXRuntime and ort-nightly packages are installed. Package ort-nightly package only.")
-
-    ort_version = ort_nightly_pkg[0].version if is_nightly else onnxruntime_pkg[0].version
-    package_name_list = set()
-    use_ort_extensions = False
-    for model_output in output_models:
-        if model_output.use_ort_extension():
-            use_ort_extensions = True
-
-        inference_settings = model_output.get_inference_config()
-        if inference_settings:
-            ep_list = inference_settings["execution_provider"]
-            for ep in ep_list:
-                pkg_tuple = get_package_name_from_ep(ep[0])
-                pkg_name = pkg_tuple[1] if is_nightly else pkg_tuple[0]
-                package_name_list.update([pkg_name])
-        else:
-            pkg_name = "ort-nightly" if is_nightly else "onnxruntime"
-            package_name_list.update([pkg_name])
-
-    try:
-        # Download Python onnxruntime package
-        NIGHTLY_PYTHON_URL = "https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ORT-Nightly/pypi/simple/"
-        NIGHTLY_PYTHON_COMMAND = create_python_download_command(NIGHTLY_PYTHON_URL)
-        STABLE_PYTHON_COMMAND = create_python_download_command()
-        python_download_path = save_path / "ONNXRuntimePackages" / "python"
-        python_download_path.mkdir(parents=True, exist_ok=True)
-        python_download_path = str(python_download_path)
-        _download_ort_extensions_package(use_ort_extensions, python_download_path, python_version)
-        if is_nightly:
-            download_command_list = [
-                NIGHTLY_PYTHON_COMMAND.substitute(
-                    package_name=package_name, version=ort_version, python_download_path=python_download_path
-                )
-                for package_name in package_name_list
-            ]
-        else:
-            download_command_list = [
-                STABLE_PYTHON_COMMAND.substitute(
-                    package_name=package_name,
-                    version=ort_version,
-                    python_download_path=python_download_path,
-                    python_version=python_version,
-                )
-                for package_name in package_name_list
-            ]
-        for download_command in download_command_list:
-            run_subprocess(download_command)
-
-        # Download CPP && CS onnxruntime package
-        if download_c_packages:
-            lang_list = ("cpp", "cs")
-            for language in lang_list:
-                ort_download_path = save_path / "ONNXRuntimePackages" / language
-                ort_download_path.mkdir(parents=True, exist_ok=True)
-                if is_nightly:
-                    _skip_download_c_package(ort_download_path)
-                else:
-                    _download_native_onnx_packages(package_name_list, ort_version, ort_download_path)
-
-    except Exception:
-        logger.exception("Failed to download onnxruntime package. Please manually download onnxruntime package.")
-
-
-def _download_ort_extensions_package(use_ort_extensions: bool, download_path: str, python_version: str):
-    if use_ort_extensions:
-        try:
-            import onnxruntime_extensions
-        except ImportError:
-            logger.warning(
-                "ONNXRuntime-Extensions package is not installed. Skip packaging ONNXRuntime-Extensions package."
-            )
-            return
-        version = onnxruntime_extensions.__version__
-        # Hardcode the nightly version number for now until we have a better way to identify nightly version
-        if version.startswith("0.8.0."):
-            system = platform.system()
-            if system == OS.WINDOWS:
-                NIGHTLY_URL = "https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ORT-Nightly/pypi/simple/"
-                download_command = create_python_download_command(NIGHTLY_URL).substitute(
-                    package_name="onnxruntime_extensions",
-                    version=version,
-                    python_download_path=download_path,
-                    python_version=python_version,
-                )
-                run_subprocess(download_command)
-            elif system == OS.LINUX:
-                logger.warning(
-                    "ONNXRuntime-Extensions nightly package is not available for Linux. "
-                    "Skip packaging ONNXRuntime-Extensions package. Please manually install ONNXRuntime-Extensions."
-                )
-        else:
-            download_command = create_python_download_command().substitute(
-                package_name="onnxruntime_extensions",
-                version=version,
-                python_download_path=download_path,
-                python_version=python_version,
-            )
-            run_subprocess(download_command)
-
-
-def _download_native_onnx_packages(package_name_list: set[str], ort_version: str, ort_download_path: str):
-    PACKAGE_DOWNLOAD_LINK_MAPPING = {
-        "onnxruntime": Template("https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime/$ort_version"),
-        "onnxruntime-gpu": Template("https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.Gpu/$ort_version"),
-        "onnxruntime-directml": Template(
-            "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.DirectML/$ort_version"
-        ),
-        "onnxruntime-openvino": None,
-        "onnxruntime-genai": Template(
-            "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntimeGenAI.Managed/$ort_version"
-        ),
-        "onnxruntime-genai-cuda": Template(
-            "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.OnnxRuntimeGenAI.Cuda/$ort_version"
-        ),
-        "onnxruntime-genai-directml": Template(
-            "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.OnnxRuntimeGenAI.DirectML/$ort_version"
-        ),
-    }
-    for package_name in package_name_list:
-        download_link = PACKAGE_DOWNLOAD_LINK_MAPPING.get(package_name)
-        download_path = str(ort_download_path / f"microsoft.ml.{package_name}.{ort_version}.nupkg")
-        if download_link:
-            urllib.request.urlretrieve(download_link.substitute(ort_version=ort_version), download_path)
-        else:
-            logger.warning(
-                "Package %s is not available for packaging. Please manually install the package.", package_name
-            )
-
-
-def _skip_download_c_package(package_path: Path):
-    warning_msg = (
-        "Found ort-nightly package installed. Please manually download "
-        "ort-nightly package from https://aiinfra.visualstudio.com/PublicPackages/_artifacts/feed/ORT-Nightly"
-    )
-    logger.warning(warning_msg)
-    readme_path = package_path / "README.md"
-    with readme_path.open("w") as f:
-        f.write(warning_msg)
-
-
-def _get_python_version():
-    major_version = sys.version_info.major
-    minor_version = sys.version_info.minor
-
-    return f"{major_version}{minor_version}"

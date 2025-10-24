@@ -7,15 +7,17 @@
 import copy
 import json
 import logging
+from enum import IntEnum
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, ClassVar, Union
 
 import onnx
 import transformers
+from packaging import version
 
-from olive.common.utils import IntEnumBase
 from olive.constants import Precision
 from olive.hardware.accelerator import AcceleratorSpec, Device
+from olive.hardware.constants import ExecutionProvider
 from olive.model import HfModelHandler, ONNXModelHandler
 from olive.model.utils import resolve_onnx_path
 from olive.passes import Pass
@@ -31,18 +33,27 @@ class ModelBuilder(Pass):
     See https://github.com/microsoft/onnxruntime-genai
     """
 
-    class BlockSize(IntEnumBase):
+    class BlockSize(IntEnum):
         B16 = 16
         B32 = 32
         B64 = 64
         B128 = 128
         B256 = 256
 
-    class AccuracyLevel(IntEnumBase):
+    class AccuracyLevel(IntEnum):
         fp32 = 1
         fp16 = 2
         bf16 = 3
         int8 = 4
+
+    EP_MAP: ClassVar[dict[ExecutionProvider, str]] = {
+        ExecutionProvider.CPUExecutionProvider: "cpu",
+        ExecutionProvider.CUDAExecutionProvider: "cuda",
+        ExecutionProvider.DmlExecutionProvider: "dml",
+        ExecutionProvider.WebGpuExecutionProvider: "webgpu",
+        ExecutionProvider.JsExecutionProvider: "web",
+        ExecutionProvider.NvTensorRTRTXExecutionProvider: "NvTensorRtRtx",
+    }
 
     @classmethod
     def _default_config(cls, accelerator_spec: AcceleratorSpec) -> dict[str, PassConfigParam]:
@@ -62,24 +73,20 @@ class ModelBuilder(Pass):
             "search": PassConfigParam(
                 type_=dict[str, Any], required=False, description="Search options to use for generate loop."
             ),
-            "use_qdq": PassConfigParam(
-                type_=bool,
-                default_value=False,
+            "int4_accuracy_level": PassConfigParam(
+                type_=ModelBuilder.AccuracyLevel,
                 required=False,
-                description=(
-                    "Use this option when you want to use quantize-dequantize ops. "
-                    "For example, you will have a quantized MatMul op instead of the MatMulNBits op."
-                ),
+                description="Specify the minimum accuracy level for activation of MatMul in int4 quantization.",
             ),
             "int4_block_size": PassConfigParam(
                 type_=ModelBuilder.BlockSize,
                 required=False,
                 description="Specify the block_size for int4 quantization. Acceptable values: 16/32/64/128/256.",
             ),
-            "int4_accuracy_level": PassConfigParam(
-                type_=ModelBuilder.AccuracyLevel,
+            "int4_is_symmetric": PassConfigParam(
+                type_=bool,
                 required=False,
-                description="Specify the minimum accuracy level for activation of MatMul in int4 quantization.",
+                description="Specify whether symmetric or asymmetric INT4 quantization needs to be used.",
             ),
             "int4_op_types_to_quantize": PassConfigParam(
                 type_=list[str],
@@ -89,27 +96,67 @@ class ModelBuilder(Pass):
                     ' ["MatMul", "Gemm"]'
                 ),
             ),
+            "int4_nodes_to_exclude": PassConfigParam(
+                type_=list[str],
+                required=False,
+                description="Specify when you want to exclude certain nodes from int4 quantization.",
+            ),
+            "int4_algo_config": PassConfigParam(
+                type_=str,
+                required=False,
+                description="Specify the INT4 quantization algorithm to use in GenAI Model Builder",
+            ),
+            "use_qdq": PassConfigParam(
+                type_=bool,
+                required=False,
+                description=(
+                    "Use this option when you want to use quantize-dequantize ops. "
+                    "For example, you will have a quantized MatMul op instead of the MatMulNBits op."
+                ),
+            ),
+            "use_8bits_moe": PassConfigParam(
+                type_=bool,
+                required=False,
+                description="Specify whether the QMoE op will use 8-bit quantization.",
+            ),
+            "use_webgpu_fp32": PassConfigParam(
+                type_=bool,
+                required=False,
+                description="Specify whether to use this option to enable GPUs that do not support FP16 on WebGPU.",
+            ),
+            "use_cuda_bf16": PassConfigParam(
+                type_=bool,
+                required=False,
+                description="Specify whether to use BF16 I/O for quantized models on CUDA EP.",
+            ),
+            "include_hidden_states": PassConfigParam(
+                type_=bool,
+                required=False,
+                description="Specify whether to have the hidden states as an output from your ONNX model.",
+            ),
             "exclude_embeds": PassConfigParam(
                 type_=bool,
-                default_value=False,
                 required=False,
                 description="Remove embedding layer from your ONNX model.",
             ),
             "exclude_lm_head": PassConfigParam(
                 type_=bool,
-                default_value=False,
                 required=False,
                 description="Remove language modeling head from your ONNX model.",
             ),
             "enable_cuda_graph": PassConfigParam(
                 type_=bool,
-                default_value=None,  # Explicitly setting to None to differentiate between user intent and default.
                 required=False,
                 description=(
                     "The model can use CUDA graph capture for CUDA execution provider. "
                     "If enabled, all nodes being placed on the CUDA EP is the prerequisite "
                     "for the CUDA graph to be used correctly."
                 ),
+            ),
+            "extra_options": PassConfigParam(
+                type_=dict[str, Any],
+                required=False,
+                description="Extra key-value pairs options to pass to the model builder.",
             ),
         }
 
@@ -125,16 +172,20 @@ class ModelBuilder(Pass):
         # if device is GPU, but user choose CPU EP, the is_cpu should be True
         if (config.precision == Precision.FP16) and not (
             accelerator_spec.accelerator_type == Device.GPU
-            and accelerator_spec.execution_provider != "CPUExecutionProvider"
+            and accelerator_spec.execution_provider != ExecutionProvider.CPUExecutionProvider
         ):
-            logger.info(
-                "FP16 is not supported on CPU. Valid precision + execution"
-                "provider combinations are: FP32 CPU, FP32 CUDA, FP16 CUDA, INT4 CPU, INT4 CUDA"
-            )
+            logger.info("FP16 is not supported on CPU.")
+            return False
+
+        if (
+            config.precision == Precision.BF16
+            and accelerator_spec.execution_provider != ExecutionProvider.CUDAExecutionProvider
+        ):
+            logger.info("BF16 is only supported on CUDA execution provider.")
             return False
 
         # Support for limited precision types
-        return config.precision in {Precision.FP32, Precision.FP16, Precision.INT8, Precision.INT4}
+        return config.precision in {Precision.FP32, Precision.FP16, Precision.BF16, Precision.INT8, Precision.INT4}
 
     @staticmethod
     def is_accelerator_agnostic(accelerator_spec: AcceleratorSpec) -> bool:
@@ -154,6 +205,7 @@ class ModelBuilder(Pass):
                 " corresponding to your onnxruntime installation using pip. cpu: onnxruntime-genai, cuda:"
                 " onnxruntime-genai-cuda, directml: onnxruntime-genai-directml"
             ) from None
+        self.maybe_patch_quant()
 
         precision = config.precision
         metadata_only = config.metadata_only
@@ -171,14 +223,7 @@ class ModelBuilder(Pass):
             else Path(resolve_onnx_path(output_model_path, model.onnx_file_name))
         )
 
-        if self.accelerator_spec.execution_provider == "DmlExecutionProvider":
-            target_execution_provider = "dml"
-        elif self.accelerator_spec.execution_provider == "CUDAExecutionProvider":
-            target_execution_provider = "cuda"
-        elif self.accelerator_spec.execution_provider == "JsExecutionProvider":
-            target_execution_provider = "web"
-        else:
-            target_execution_provider = "cpu"
+        target_execution_provider = self.EP_MAP.get(self.accelerator_spec.execution_provider, "cpu")
 
         extra_args = {"filename": str(output_model_filepath.name)}
         if metadata_only:
@@ -192,27 +237,17 @@ class ModelBuilder(Pass):
             if model.adapter_path:
                 extra_args["adapter_path"] = model.adapter_path
 
-        if config.int4_block_size:
-            extra_args["int4_block_size"] = config.int4_block_size.value
+        extra_args.update(
+            {
+                key: value.value if isinstance(value, IntEnum) else value
+                for key, value in config.dict().items()
+                if value is not None and key not in {"precision", "metadata_only", "search", "extra_options"}
+            }
+        )
 
-        if config.use_qdq:
-            extra_args["use_qdq"] = config.use_qdq
-
-        if config.int4_accuracy_level:
-            extra_args["int4_accuracy_level"] = config.int4_accuracy_level.value
-
-        if config.int4_op_types_to_quantize:
-            extra_args["int4_op_types_to_quantize"] = config.int4_op_types_to_quantize
-
-        # args that are only checked for presence, not value
-        for arg in ["exclude_embeds", "exclude_lm_head"]:
-            if getattr(config, arg):
-                extra_args[arg] = True
-
-        # args that are checked for presence and value (if present)
-        for arg in ["enable_cuda_graph"]:
-            if getattr(config, arg) is not None:
-                extra_args[arg] = "1" if getattr(config, arg) else "0"
+        # Override extra options with user provided in extra_options parameter
+        if config.extra_options:
+            extra_args.update(config.extra_options)
 
         model_attributes = copy.deepcopy(model.model_attributes or {})
 
@@ -295,3 +330,22 @@ class ModelBuilder(Pass):
             )
 
         return output_model
+
+    # TODO(jambayk): Remove this once version 0.9.1 with olive quant changes is released
+    @staticmethod
+    def maybe_patch_quant():
+        """Patch onnxruntime-genai olive quant model to disable offset handling for qzeros in version 0.9.0+."""
+        from onnxruntime_genai import __version__ as genai_version
+
+        if version.parse(genai_version) < version.parse("0.9.0"):
+            return
+
+        from onnxruntime_genai.models.quantized_model import OliveModel
+
+        if getattr(OliveModel.handle_qzeros, "__name__", "") == "_noop_handle_qzeros":
+            return
+
+        def _noop_handle_qzeros(self, module):
+            pass
+
+        OliveModel.handle_qzeros = _noop_handle_qzeros

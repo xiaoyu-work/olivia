@@ -185,7 +185,7 @@ We intend to generalize the execution order implementation to support such chain
 There are also plans to support nested execution order of forms like `(PassA, [PassB, PassC])` where passes `B` and `C` are optimized for each search point in pass `A`.
 
 ### System
-System encapsulates the system Olive is targeting as well the system on which Olive is running. A pass can select a system as a 'host' and the evaluator can 'target' a system. The 'host' and 'target' are user provided configuration options. Olive provides AzureMLSystem, DockerSystem, PythonEnvironmentSystem and IsolatedORTSystem in addition to LocalSystem.
+System encapsulates the system Olive is targeting as well the system on which Olive is running. A pass can select a system as a 'host' and the evaluator can 'target' a system. The 'host' and 'target' are user provided configuration options. Olive provides DockerSystem and PythonEnvironmentSystem in addition to LocalSystem.
 
 ### OliveSystem Class
 The base class for System:
@@ -363,7 +363,7 @@ Users can build their own workflows using the python api but we also provide a c
 python –m olive.workflows.run --config <json config path>
 ```
 
-Please refer to `examples/bert_ptq_cpu/bert_config.json` for an example.
+Please refer to [olive-recipes](https://github.com/microsoft/olive-recipes) repo for examples.
 
 This tool is also available for use in the python api
 ```python
